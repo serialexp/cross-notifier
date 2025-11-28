@@ -6,9 +6,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"image"
 	"image/color"
+	_ "image/jpeg"
+	_ "image/png"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -22,8 +26,36 @@ const (
 	maxVisible       = 4
 	notificationW    = 320
 	notificationH    = 80
+	iconSize         = 48
 	padding          = 10
 	defaultDurationS = 5
+)
+
+// Theme colors
+type theme struct {
+	windowBg  color.RGBA
+	cardBg    imgui.Vec4
+	titleText imgui.Vec4
+	bodyText  imgui.Vec4
+	moreText  imgui.Vec4
+}
+
+var (
+	darkTheme = theme{
+		windowBg:  color.RGBA{0, 0, 0, 0}, // transparent window, cards provide the background
+		cardBg:    imgui.Vec4{X: 0.15, Y: 0.15, Z: 0.17, W: 0.85},
+		titleText: imgui.Vec4{X: 1, Y: 1, Z: 1, W: 1},
+		bodyText:  imgui.Vec4{X: 0.8, Y: 0.8, Z: 0.8, W: 1},
+		moreText:  imgui.Vec4{X: 0.6, Y: 0.6, Z: 0.6, W: 1},
+	}
+	lightTheme = theme{
+		windowBg:  color.RGBA{0, 0, 0, 0}, // transparent window, cards provide the background
+		cardBg:    imgui.Vec4{X: 0.96, Y: 0.96, Z: 0.96, W: 0.85},
+		titleText: imgui.Vec4{X: 0.1, Y: 0.1, Z: 0.1, W: 1},
+		bodyText:  imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1},
+		moreText:  imgui.Vec4{X: 0.5, Y: 0.5, Z: 0.5, W: 1},
+	}
+	currentTheme = &darkTheme
 )
 
 type Notification struct {
@@ -41,6 +73,11 @@ var (
 	notifications []Notification
 	notifMu       sync.Mutex
 	nextID        int64 = 1
+
+	// Texture management
+	textures     = make(map[int64]*g.Texture)
+	pendingIcons = make(map[int64]string) // notification ID -> icon path
+	textureMu    sync.Mutex
 )
 
 func addNotification(n Notification) {
@@ -57,6 +94,13 @@ func addNotification(n Notification) {
 	}
 	n.ExpiresAt = n.CreatedAt.Add(time.Duration(duration) * time.Second)
 
+	// Queue icon loading if specified
+	if n.Icon != "" {
+		textureMu.Lock()
+		pendingIcons[n.ID] = n.Icon
+		textureMu.Unlock()
+	}
+
 	notifications = append(notifications, n)
 	g.Update()
 }
@@ -68,10 +112,57 @@ func dismissNotification(id int64) {
 	for i, n := range notifications {
 		if n.ID == id {
 			notifications = append(notifications[:i], notifications[i+1:]...)
+			cleanupTexture(id)
 			g.Update()
 			return
 		}
 	}
+}
+
+func cleanupTexture(id int64) {
+	textureMu.Lock()
+	defer textureMu.Unlock()
+	delete(textures, id)
+	delete(pendingIcons, id)
+}
+
+func loadPendingIcons() {
+	textureMu.Lock()
+	pending := make(map[int64]string)
+	for id, path := range pendingIcons {
+		pending[id] = path
+	}
+	textureMu.Unlock()
+
+	for id, path := range pending {
+		img, err := loadImage(path)
+		if err != nil {
+			log.Printf("Failed to load icon %s: %v", path, err)
+			textureMu.Lock()
+			delete(pendingIcons, id)
+			textureMu.Unlock()
+			continue
+		}
+
+		notifID := id // capture for closure
+		g.EnqueueNewTextureFromRgba(img, func(tex *g.Texture) {
+			textureMu.Lock()
+			textures[notifID] = tex
+			delete(pendingIcons, notifID)
+			textureMu.Unlock()
+		})
+	}
+}
+
+func loadImage(path string) (image.Image, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
+	return img, err
 }
 
 func pruneExpired() {
@@ -85,6 +176,7 @@ func pruneExpired() {
 		if now.Before(n.ExpiresAt) {
 			filtered = append(filtered, n)
 		} else {
+			cleanupTexture(n.ID)
 			changed = true
 		}
 	}
@@ -124,9 +216,23 @@ func startHTTPServer() {
 	}
 }
 
+func updateTheme() {
+	if isDarkMode() {
+		currentTheme = &darkTheme
+	} else {
+		currentTheme = &lightTheme
+	}
+}
+
 func loop() {
+	// Update theme based on OS setting
+	updateTheme()
+
 	// Prune expired notifications each frame
 	pruneExpired()
+
+	// Load any pending icons (must happen on main thread)
+	loadPendingIcons()
 
 	// Update window size on main thread
 	updateWindowSize()
@@ -145,7 +251,7 @@ func loop() {
 
 	imgui.PushStyleVarFloat(imgui.StyleVarWindowBorderSize, 0)
 	imgui.PushStyleVarFloat(imgui.StyleVarWindowRounding, 8)
-	g.PushColorWindowBg(color.RGBA{40, 40, 40, 230})
+	g.PushColorWindowBg(currentTheme.windowBg)
 
 	g.SingleWindow().Layout(
 		g.Custom(func() {
@@ -160,7 +266,7 @@ func loop() {
 
 			if hiddenCount > 0 {
 				imgui.Spacing()
-				imgui.TextColored(imgui.Vec4{X: 0.6, Y: 0.6, Z: 0.6, W: 1},
+				imgui.TextColored(currentTheme.moreText,
 					fmt.Sprintf("+ %d more notification(s)...", hiddenCount))
 			}
 		}),
@@ -175,24 +281,52 @@ func renderNotification(n Notification, index int) {
 	id := n.ID
 
 	// Card background
-	imgui.PushStyleColorVec4(imgui.ColChildBg, imgui.Vec4{X: 0.2, Y: 0.2, Z: 0.25, W: 0.9})
+	imgui.PushStyleColorVec4(imgui.ColChildBg, currentTheme.cardBg)
 
 	childFlags := imgui.ChildFlagsNone
 	windowFlags := imgui.WindowFlagsNone
 
+	// Card styling
+	imgui.PushStyleVarFloat(imgui.StyleVarChildRounding, 6)
+
 	if imgui.BeginChildStrV(fmt.Sprintf("notif_%d", id), imgui.Vec2{X: notificationW - 2*padding, Y: notificationH - padding}, childFlags, windowFlags) {
+		// Manual padding inside card
+		imgui.SetCursorPos(imgui.Vec2{X: 10, Y: 8})
+
+		// Check for icon texture
+		textureMu.Lock()
+		tex := textures[id]
+		textureMu.Unlock()
+
+		if tex != nil {
+			// Layout: icon on left (vertically centered), text on right
+			contentHeight := notificationH - padding
+			iconOffset := float32(contentHeight-iconSize) / 2
+			if iconOffset > 0 {
+				imgui.SetCursorPosY(imgui.CursorPosY() + iconOffset)
+			}
+			imgui.Image(tex.ID(), imgui.Vec2{X: iconSize, Y: iconSize})
+			imgui.SameLineV(0, 10)
+			imgui.SetCursorPosY(imgui.CursorPosY() - iconOffset) // reset for text
+			imgui.BeginGroup()
+		}
+
 		// Title
 		if n.Title != "" {
-			imgui.PushStyleColorVec4(imgui.ColText, imgui.Vec4{X: 1, Y: 1, Z: 1, W: 1})
+			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.titleText)
 			imgui.TextWrapped(n.Title)
 			imgui.PopStyleColor()
 		}
 
 		// Message
 		if n.Message != "" {
-			imgui.PushStyleColorVec4(imgui.ColText, imgui.Vec4{X: 0.8, Y: 0.8, Z: 0.8, W: 1})
+			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.bodyText)
 			imgui.TextWrapped(n.Message)
 			imgui.PopStyleColor()
+		}
+
+		if tex != nil {
+			imgui.EndGroup()
 		}
 
 		// Click to dismiss
@@ -201,6 +335,7 @@ func renderNotification(n Notification, index int) {
 		}
 	}
 	imgui.EndChild()
+	imgui.PopStyleVar() // ChildRounding
 	imgui.PopStyleColor()
 
 	// Spacing between notifications
