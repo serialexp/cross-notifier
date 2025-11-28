@@ -1,6 +1,11 @@
 # Binary
 cross-notifier
 
+# macOS build artifacts
+*.app
+*.dmg
+dmg-temp/
+
 # IDE
 .idea/
 *.swp
