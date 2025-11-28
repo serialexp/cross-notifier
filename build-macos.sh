@@ -24,6 +24,11 @@ mkdir -p "${RESOURCES_DIR}"
 echo "Copying binary..."
 cp cross-notifier "${MACOS_DIR}/"
 
+echo "Copying icon..."
+if [ -f "Icon.icns" ]; then
+    cp Icon.icns "${RESOURCES_DIR}/"
+fi
+
 echo "Creating Info.plist..."
 cat > "${CONTENTS_DIR}/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -32,6 +37,8 @@ cat > "${CONTENTS_DIR}/Info.plist" << EOF
 <dict>
     <key>CFBundleExecutable</key>
     <string>cross-notifier</string>
+    <key>CFBundleIconFile</key>
+    <string>Icon</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleName</key>
