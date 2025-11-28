@@ -1,0 +1,11 @@
+# Binary
+cross-notifier
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
