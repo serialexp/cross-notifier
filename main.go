@@ -19,6 +19,7 @@ import (
 	"github.com/AllenDang/cimgui-go/imgui"
 	g "github.com/AllenDang/giu"
 	"github.com/kbinani/screenshot"
+	xdraw "golang.org/x/image/draw"
 )
 
 const (
@@ -162,7 +163,23 @@ func loadImage(path string) (image.Image, error) {
 	defer f.Close()
 
 	img, _, err := image.Decode(f)
-	return img, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Scale down to iconSize for better quality
+	return scaleImage(img, iconSize, iconSize), nil
+}
+
+func scaleImage(src image.Image, width, height int) image.Image {
+	srcBounds := src.Bounds()
+	if srcBounds.Dx() <= width && srcBounds.Dy() <= height {
+		return src // no scaling needed
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, srcBounds, xdraw.Over, nil)
+	return dst
 }
 
 func pruneExpired() {

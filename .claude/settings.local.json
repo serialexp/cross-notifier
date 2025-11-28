@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(git init:*)",
+      "Bash(go mod init:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go build:*)",
+      "Bash(go get:*)",
+      "Bash(pkill:*)",
+      "Bash(curl:*)",
+      "WebFetch(domain:stackoverflow.com)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
