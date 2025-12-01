@@ -22,13 +22,13 @@ import (
 )
 
 const (
-	defaultPort      = "9876"
-	maxVisible       = 4
-	notificationW    = 320
-	notificationH    = 80
-	iconSize         = 48
-	padding          = 10
-	defaultDurationS = 5
+	defaultPort   = "9876"
+	maxVisible    = 4
+	notificationW = 320
+	notificationH = 80
+	iconSize      = 48
+	padding       = 10
+	stackPeek     = 20 // pixels visible for stacked notifications
 )
 
 // Theme colors
@@ -43,14 +43,14 @@ type theme struct {
 var (
 	darkTheme = theme{
 		windowBg:  color.RGBA{0, 0, 0, 0}, // transparent window, cards provide the background
-		cardBg:    imgui.Vec4{X: 0.15, Y: 0.15, Z: 0.17, W: 0.85},
+		cardBg:    imgui.Vec4{X: 0.15, Y: 0.15, Z: 0.17, W: 0.9},
 		titleText: imgui.Vec4{X: 1, Y: 1, Z: 1, W: 1},
 		bodyText:  imgui.Vec4{X: 0.8, Y: 0.8, Z: 0.8, W: 1},
 		moreText:  imgui.Vec4{X: 0.6, Y: 0.6, Z: 0.6, W: 1},
 	}
 	lightTheme = theme{
 		windowBg:  color.RGBA{0, 0, 0, 0}, // transparent window, cards provide the background
-		cardBg:    imgui.Vec4{X: 0.96, Y: 0.96, Z: 0.96, W: 0.85},
+		cardBg:    imgui.Vec4{X: 0.96, Y: 0.96, Z: 0.96, W: 0.9},
 		titleText: imgui.Vec4{X: 0.1, Y: 0.1, Z: 0.1, W: 1},
 		bodyText:  imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1},
 		moreText:  imgui.Vec4{X: 0.5, Y: 0.5, Z: 0.5, W: 1},
@@ -65,7 +65,7 @@ type Notification struct {
 	IconData  string    `json:"iconData,omitempty"` // base64 encoded image
 	IconHref  string    `json:"iconHref,omitempty"` // URL to fetch image from
 	IconPath  string    `json:"iconPath,omitempty"` // local file path
-	Duration  int       `json:"duration,omitempty"` // seconds, 0 = default
+	Duration  int       `json:"duration,omitempty"` // seconds: >0 auto-close, 0/omitted=persistent
 	CreatedAt time.Time `json:"-"`
 	ExpiresAt time.Time `json:"-"`
 }
@@ -79,6 +79,9 @@ var (
 	// Texture management
 	textures     = make(map[int64]*g.Texture)
 	pendingIcons = make(map[int64]Notification) // notification ID -> notification with icon info
+
+	// Hover state tracking (previous frame)
+	hoveredCards = make(map[int64]bool)
 	textureMu    sync.Mutex
 )
 
@@ -90,11 +93,13 @@ func addNotification(n Notification) {
 	nextID++
 	n.CreatedAt = time.Now()
 
-	duration := n.Duration
-	if duration <= 0 {
-		duration = defaultDurationS
+	// duration > 0: auto-close after that many seconds
+	// duration <= 0: never auto-close (default)
+	if n.Duration > 0 {
+		n.ExpiresAt = n.CreatedAt.Add(time.Duration(n.Duration) * time.Second)
+	} else {
+		n.ExpiresAt = time.Time{} // zero time = never expires
 	}
-	n.ExpiresAt = n.CreatedAt.Add(time.Duration(duration) * time.Second)
 
 	// Queue icon loading if any icon source is specified
 	if n.IconData != "" || n.IconHref != "" || n.IconPath != "" {
@@ -126,6 +131,7 @@ func cleanupTexture(id int64) {
 	defer textureMu.Unlock()
 	delete(textures, id)
 	delete(pendingIcons, id)
+	delete(hoveredCards, id)
 }
 
 func loadPendingIcons() {
@@ -181,7 +187,8 @@ func pruneExpired() {
 	changed := false
 	filtered := notifications[:0]
 	for _, n := range notifications {
-		if now.Before(n.ExpiresAt) {
+		// Keep if: never expires (zero time) or not yet expired
+		if n.ExpiresAt.IsZero() || now.Before(n.ExpiresAt) {
 			filtered = append(filtered, n)
 		} else {
 			cleanupTexture(n.ID)
@@ -264,19 +271,9 @@ func loop() {
 
 	g.SingleWindow().Layout(
 		g.Custom(func() {
-			for i, n := range visible {
-				renderNotification(n, i)
-			}
-
-			// Show count of hidden notifications
-			notifMu.Lock()
-			hiddenCount := len(notifications) - len(visible)
-			notifMu.Unlock()
-
-			if hiddenCount > 0 {
-				imgui.Spacing()
-				imgui.TextColored(currentTheme.moreText,
-					fmt.Sprintf("+ %d more notification(s)...", hiddenCount))
+			// Render back to front (last notification first, so first is on top)
+			for i := len(visible) - 1; i >= 0; i-- {
+				renderStackedNotification(visible[i], i, len(visible))
 			}
 		}),
 	)
@@ -286,19 +283,33 @@ func loop() {
 	imgui.PopStyleVar()
 }
 
-func renderNotification(n Notification, index int) {
+func renderStackedNotification(n Notification, index int, total int) {
 	id := n.ID
 
-	// Card background
-	imgui.PushStyleColorVec4(imgui.ColChildBg, currentTheme.cardBg)
+	// Scale down cards behind the first one for depth effect
+	scale := float32(1.0) - float32(index)*0.03
+	cardWidth := (notificationW - 2*padding) * scale
+	cardHeight := (notificationH - padding) * scale
 
-	childFlags := imgui.ChildFlagsNone
+	// Position this card in the stack, centered horizontally
+	xOffset := ((notificationW - 2*padding) - cardWidth) / 2
+	yOffset := float32(index * stackPeek)
+	imgui.SetCursorPos(imgui.Vec2{X: xOffset, Y: yOffset})
+
+	// Card styling - full opacity when hovered
+	cardBg := currentTheme.cardBg
+	if hoveredCards[id] {
+		cardBg.W = 1.0
+	}
+	imgui.PushStyleColorVec4(imgui.ColChildBg, cardBg)
+	imgui.PushStyleColorVec4(imgui.ColBorder, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 0.8})
+	imgui.PushStyleVarFloat(imgui.StyleVarChildRounding, 6)
+	imgui.PushStyleVarFloat(imgui.StyleVarChildBorderSize, 1)
+
+	childFlags := imgui.ChildFlagsBorders
 	windowFlags := imgui.WindowFlagsNone
 
-	// Card styling
-	imgui.PushStyleVarFloat(imgui.StyleVarChildRounding, 6)
-
-	if imgui.BeginChildStrV(fmt.Sprintf("notif_%d", id), imgui.Vec2{X: notificationW - 2*padding, Y: notificationH - padding}, childFlags, windowFlags) {
+	if imgui.BeginChildStrV(fmt.Sprintf("notif_%d", id), imgui.Vec2{X: cardWidth, Y: cardHeight}, childFlags, windowFlags) {
 		// Check for icon texture
 		textureMu.Lock()
 		tex := textures[id]
@@ -338,25 +349,29 @@ func renderNotification(n Notification, index int) {
 			imgui.PopStyleColor()
 		}
 
+		// Track hover state for next frame
+		isHovered := imgui.IsWindowHovered()
+		hoveredCards[id] = isHovered
+
+		if isHovered {
+			imgui.SetMouseCursor(imgui.MouseCursorHand)
+		}
+
 		// Click to dismiss
-		if imgui.IsWindowHovered() && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
+		if isHovered && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
 			go dismissNotification(id)
 		}
 	}
 	imgui.EndChild()
+	imgui.PopStyleVar() // ChildBorderSize
 	imgui.PopStyleVar() // ChildRounding
-	imgui.PopStyleColor()
-
-	// Spacing between notifications
-	if index < maxVisible-1 {
-		imgui.Spacing()
-	}
+	imgui.PopStyleColor() // Border
+	imgui.PopStyleColor() // ChildBg
 }
 
 func updateWindowSize() {
 	notifMu.Lock()
 	count := len(notifications)
-	hasMore := count > maxVisible
 	if count > maxVisible {
 		count = maxVisible
 	}
@@ -372,10 +387,8 @@ func updateWindowSize() {
 	// Reposition when showing notifications
 	positionWindow()
 
-	height := count*notificationH + padding
-	if hasMore {
-		height += 30
-	}
+	// Stack layout: first card full height + peek for each additional card
+	height := notificationH + (count-1)*stackPeek + padding
 
 	wnd.SetSize(notificationW, height)
 }
