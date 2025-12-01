@@ -1,18 +1,16 @@
 // ABOUTME: Cross-platform notification daemon that displays notifications via HTTP API.
-// ABOUTME: Listens on a local port and renders notifications in top-right corner.
+// ABOUTME: Can run as server (forwarding to clients) or daemon (displaying notifications).
 
 package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
-	_ "image/jpeg"
-	_ "image/png"
 	"log"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -23,7 +21,7 @@ import (
 )
 
 const (
-	listenPort       = ":9876"
+	defaultPort      = "9876"
 	maxVisible       = 4
 	notificationW    = 320
 	notificationH    = 80
@@ -63,7 +61,9 @@ type Notification struct {
 	ID        int64     `json:"-"`
 	Title     string    `json:"title"`
 	Message   string    `json:"message"`
-	Icon      string    `json:"icon,omitempty"` // base64 or URL (not yet implemented)
+	IconData  string    `json:"iconData,omitempty"` // base64 encoded image
+	IconHref  string    `json:"iconHref,omitempty"` // URL to fetch image from
+	IconPath  string    `json:"iconPath,omitempty"` // local file path
 	Duration  int       `json:"duration,omitempty"` // seconds, 0 = default
 	CreatedAt time.Time `json:"-"`
 	ExpiresAt time.Time `json:"-"`
@@ -77,7 +77,7 @@ var (
 
 	// Texture management
 	textures     = make(map[int64]*g.Texture)
-	pendingIcons = make(map[int64]string) // notification ID -> icon path
+	pendingIcons = make(map[int64]Notification) // notification ID -> notification with icon info
 	textureMu    sync.Mutex
 )
 
@@ -95,10 +95,10 @@ func addNotification(n Notification) {
 	}
 	n.ExpiresAt = n.CreatedAt.Add(time.Duration(duration) * time.Second)
 
-	// Queue icon loading if specified
-	if n.Icon != "" {
+	// Queue icon loading if any icon source is specified
+	if n.IconData != "" || n.IconHref != "" || n.IconPath != "" {
 		textureMu.Lock()
-		pendingIcons[n.ID] = n.Icon
+		pendingIcons[n.ID] = n
 		textureMu.Unlock()
 	}
 
@@ -129,16 +129,22 @@ func cleanupTexture(id int64) {
 
 func loadPendingIcons() {
 	textureMu.Lock()
-	pending := make(map[int64]string)
-	for id, path := range pendingIcons {
-		pending[id] = path
+	pending := make(map[int64]Notification)
+	for id, n := range pendingIcons {
+		pending[id] = n
 	}
 	textureMu.Unlock()
 
-	for id, path := range pending {
-		img, err := loadImage(path)
+	for id, n := range pending {
+		img, err := resolveIcon(n)
 		if err != nil {
-			log.Printf("Failed to load icon %s: %v", path, err)
+			log.Printf("Failed to load icon for notification %d: %v", id, err)
+			textureMu.Lock()
+			delete(pendingIcons, id)
+			textureMu.Unlock()
+			continue
+		}
+		if img == nil {
 			textureMu.Lock()
 			delete(pendingIcons, id)
 			textureMu.Unlock()
@@ -153,22 +159,6 @@ func loadPendingIcons() {
 			textureMu.Unlock()
 		})
 	}
-}
-
-func loadImage(path string) (image.Image, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	img, _, err := image.Decode(f)
-	if err != nil {
-		return nil, err
-	}
-
-	// Scale down to iconSize for better quality
-	return scaleImage(img, iconSize, iconSize), nil
 }
 
 func scaleImage(src image.Image, width, height int) image.Image {
@@ -225,10 +215,11 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func startHTTPServer() {
+func startHTTPServer(port string) {
 	http.HandleFunc("/notify", httpHandler)
-	log.Printf("Listening on http://localhost%s/notify", listenPort)
-	if err := http.ListenAndServe(listenPort, nil); err != nil {
+	addr := ":" + port
+	log.Printf("Listening on http://localhost%s/notify", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("HTTP server failed: %v", err)
 	}
 }
@@ -400,7 +391,24 @@ func positionWindow() {
 	wnd.SetPos(x, y)
 }
 
-func main() {
+func runServer(port, secret string) {
+	server := NewNotificationServer(secret)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/notify", server.HandleNotify)
+	mux.HandleFunc("/ws", server.HandleWebSocket)
+
+	addr := ":" + port
+	log.Printf("Server listening on %s", addr)
+	log.Printf("  POST /notify - send notifications (requires auth)")
+	log.Printf("  GET  /ws     - WebSocket connection for clients (requires auth)")
+
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
+}
+
+func runDaemon(port, serverURL, secret string) {
 	wnd = g.NewMasterWindow(
 		"Notifications",
 		notificationW, notificationH,
@@ -411,8 +419,42 @@ func main() {
 
 	wnd.SetBgColor(color.RGBA{0, 0, 0, 0})
 
-	// Start HTTP server in background
-	go startHTTPServer()
+	// Start local HTTP server in background
+	go startHTTPServer(port)
+
+	// Connect to remote server if configured
+	if serverURL != "" {
+		client := NewNotificationClient(serverURL, secret, func(n Notification) {
+			addNotification(n)
+		})
+
+		client.OnConnect = func() {
+			addNotification(Notification{
+				Title:    "Connected",
+				Message:  "Connected to notification server",
+				Duration: 3,
+			})
+		}
+
+		client.OnDisconnect = func() {
+			addNotification(Notification{
+				Title:    "Disconnected",
+				Message:  "Lost connection to notification server",
+				Duration: 5,
+			})
+		}
+
+		go func() {
+			if err := client.Connect(); err != nil {
+				log.Printf("Failed to connect to server: %v", err)
+				addNotification(Notification{
+					Title:    "Connection Failed",
+					Message:  fmt.Sprintf("Could not connect to %s", serverURL),
+					Duration: 5,
+				})
+			}
+		}()
+	}
 
 	// Periodically trigger redraws for expiration checks
 	go func() {
@@ -424,4 +466,67 @@ func main() {
 
 	positionWindow()
 	wnd.Run(loop)
+}
+
+func main() {
+	serverMode := flag.Bool("server", false, "Run as notification server")
+	port := flag.String("port", defaultPort, "Port to listen on")
+	connect := flag.String("connect", "", "WebSocket URL of server to connect to (e.g., ws://host:9876/ws)")
+	secret := flag.String("secret", "", "Shared secret for authentication")
+	setup := flag.Bool("setup", false, "Open settings window")
+
+	flag.Parse()
+
+	if *serverMode {
+		if *secret == "" {
+			log.Fatal("Server mode requires -secret flag")
+		}
+		runServer(*port, *secret)
+		return
+	}
+
+	// Daemon mode - check for config file
+	configPath := ConfigPath()
+	cfg, err := LoadConfig(configPath)
+	configExists := err == nil
+
+	// Determine if we need to show settings
+	showSettings := *setup || !configExists
+
+	// CLI flags override config
+	serverURL := *connect
+	secretKey := *secret
+	if cfg != nil && serverURL == "" {
+		serverURL = cfg.ServerURL
+	}
+	if cfg != nil && secretKey == "" {
+		secretKey = cfg.Secret
+	}
+
+	if showSettings {
+		initial := &Config{ServerURL: serverURL, Secret: secretKey}
+		result := ShowSettingsWindow(initial)
+
+		if result.Cancelled {
+			log.Println("Setup cancelled")
+			return
+		}
+
+		serverURL = result.ServerURL
+		secretKey = result.Secret
+
+		// Save config
+		newCfg := &Config{ServerURL: serverURL, Secret: secretKey}
+		if err := newCfg.Save(configPath); err != nil {
+			log.Printf("Warning: failed to save config: %v", err)
+		} else {
+			log.Printf("Config saved to %s", configPath)
+		}
+	}
+
+	if serverURL != "" && secretKey == "" {
+		log.Fatal("Connecting to server requires a secret")
+	}
+
+	runDaemon(*port, serverURL, secretKey)
 }
