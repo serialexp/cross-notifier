@@ -32,6 +32,27 @@ go build -o cross-notifier .
 ./cross-notifier
 ```
 
+### Docker (Server Only)
+
+Build with Depot:
+
+```bash
+just docker
+```
+
+Run the published image:
+
+```bash
+docker run -d -p 9876:9876 -e CROSS_NOTIFIER_SECRET=mysecret aeolun/cross-notifier-server
+```
+
+Or build locally:
+
+```bash
+just docker-local
+docker run -d -p 9876:9876 -e CROSS_NOTIFIER_SECRET=mysecret cross-notifier-server
+```
+
 ## Usage
 
 ### Daemon Mode (Default)
@@ -69,6 +90,16 @@ To reconfigure, delete the config file or run:
 ```bash
 ./cross-notifier -setup
 ```
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `CROSS_NOTIFIER_SECRET` | Shared secret for authentication |
+| `CROSS_NOTIFIER_PORT` | Port to listen on (default: 9876) |
+| `CROSS_NOTIFIER_SERVER` | WebSocket URL for daemon to connect to |
+
+Environment variables are used as fallbacks when CLI flags are not provided.
 
 ## API
 

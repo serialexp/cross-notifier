@@ -1,0 +1,22 @@
+# Binary and build artifacts
+cross-notifier
+*.app
+*.dmg
+dmg-temp/
+
+# IDE and editor
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+
+# Local config
+.claude/
+
+# Source images
+logo.kra
+logo.kra~
+logo.png~

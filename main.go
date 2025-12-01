@@ -11,6 +11,7 @@ import (
 	"image/color"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -470,16 +471,29 @@ func runDaemon(port, serverURL, secret string) {
 
 func main() {
 	serverMode := flag.Bool("server", false, "Run as notification server")
-	port := flag.String("port", defaultPort, "Port to listen on")
-	connect := flag.String("connect", "", "WebSocket URL of server to connect to (e.g., ws://host:9876/ws)")
-	secret := flag.String("secret", "", "Shared secret for authentication")
+	port := flag.String("port", defaultPort, "Port to listen on (or CROSS_NOTIFIER_PORT env)")
+	connect := flag.String("connect", "", "WebSocket URL of server to connect to (or CROSS_NOTIFIER_SERVER env)")
+	secret := flag.String("secret", "", "Shared secret for authentication (or CROSS_NOTIFIER_SECRET env)")
 	setup := flag.Bool("setup", false, "Open settings window")
 
 	flag.Parse()
 
+	// Environment variables as fallbacks
+	if *port == defaultPort {
+		if envPort := os.Getenv("CROSS_NOTIFIER_PORT"); envPort != "" {
+			*port = envPort
+		}
+	}
+	if *secret == "" {
+		*secret = os.Getenv("CROSS_NOTIFIER_SECRET")
+	}
+	if *connect == "" {
+		*connect = os.Getenv("CROSS_NOTIFIER_SERVER")
+	}
+
 	if *serverMode {
 		if *secret == "" {
-			log.Fatal("Server mode requires -secret flag")
+			log.Fatal("Server mode requires -secret flag or CROSS_NOTIFIER_SECRET env")
 		}
 		runServer(*port, *secret)
 		return

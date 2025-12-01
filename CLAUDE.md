@@ -16,6 +16,15 @@ go test -run TestName ./...
 
 # Build macOS app bundle and DMG
 ./build-macos.sh --dmg
+
+# Build server-only binary (no GUI dependencies)
+just server
+
+# Build Docker image via Depot
+just docker
+
+# Build Docker image locally
+just docker-local
 ```
 
 ## Running
