@@ -26,6 +26,10 @@ docker:
 docker-local:
     docker build -t cross-notifier-server .
 
+# Send test notifications in parallel (default 10)
+stress count="10":
+    ./test-notify.sh "Stress Test" "Message" "" {{count}}
+
 # Clean build artifacts
 clean:
     rm -f cross-notifier server

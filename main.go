@@ -299,29 +299,32 @@ func renderNotification(n Notification, index int) {
 	imgui.PushStyleVarFloat(imgui.StyleVarChildRounding, 6)
 
 	if imgui.BeginChildStrV(fmt.Sprintf("notif_%d", id), imgui.Vec2{X: notificationW - 2*padding, Y: notificationH - padding}, childFlags, windowFlags) {
-		// Manual padding inside card
-		imgui.SetCursorPos(imgui.Vec2{X: 10, Y: 8})
-
 		// Check for icon texture
 		textureMu.Lock()
 		tex := textures[id]
 		textureMu.Unlock()
 
+		// Padding inside card
+		const innerPadding float32 = 10
+
+		textStartX := innerPadding
+
 		if tex != nil {
 			// Layout: icon on left (vertically centered), text on right
 			contentHeight := notificationH - padding
 			iconOffset := float32(contentHeight-iconSize) / 2
-			if iconOffset > 0 {
-				imgui.SetCursorPosY(imgui.CursorPosY() + iconOffset)
-			}
+			imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: iconOffset})
 			imgui.Image(tex.ID(), imgui.Vec2{X: iconSize, Y: iconSize})
-			imgui.SameLineV(0, 10)
-			imgui.SetCursorPosY(imgui.CursorPosY() - iconOffset) // reset for text
-			imgui.BeginGroup()
+			imgui.SameLineV(0, innerPadding)
+			textStartX = imgui.CursorPosX()
+			imgui.SetCursorPosY(innerPadding)
+		} else {
+			imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: innerPadding})
 		}
 
 		// Title
 		if n.Title != "" {
+			imgui.SetCursorPosX(textStartX)
 			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.titleText)
 			imgui.TextWrapped(n.Title)
 			imgui.PopStyleColor()
@@ -329,13 +332,10 @@ func renderNotification(n Notification, index int) {
 
 		// Message
 		if n.Message != "" {
+			imgui.SetCursorPosX(textStartX)
 			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.bodyText)
 			imgui.TextWrapped(n.Message)
 			imgui.PopStyleColor()
-		}
-
-		if tex != nil {
-			imgui.EndGroup()
 		}
 
 		// Click to dismiss

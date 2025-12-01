@@ -71,3 +71,7 @@ just docker-local
 **Authentication:** Shared secret via `Authorization: Bearer <secret>` header for both HTTP and WebSocket connections.
 
 **Config location:** `~/Library/Application Support/cross-notifier/config.json` (macOS)
+
+## imgui/giu Quirks
+
+**Cursor X position resets after TextWrapped:** When using `imgui.TextWrapped()`, the cursor X position resets to 0 on the next line. To maintain consistent left padding across multiple text elements, explicitly call `imgui.SetCursorPosX(x)` before each text element. Using `imgui.SetCursorPos()` once at the start is not sufficient.
