@@ -1,16 +1,17 @@
 # CrossNotifier
 
-A cross-platform notification daemon that displays desktop notifications via HTTP API.
+A cross-platform notification daemon that displays desktop notifications via HTTP API. Supports both local notifications and remote notifications from a central server.
 
 ## Features
 
 - HTTP API on `localhost:9876`
-- Supports title, message, and icon
+- Supports title, message, and icon (file path, URL, or base64)
 - Configurable display duration
 - Auto-dismiss with click-to-dismiss
 - Stacks up to 4 notifications (queues extras)
 - Adapts to OS dark/light theme
-- Transparent, rounded notification cards
+- Remote server mode for broadcasting to multiple clients
+- Automatic reconnection with exponential backoff
 
 ## Installation
 
@@ -33,13 +34,59 @@ go build -o cross-notifier .
 
 ## Usage
 
-Start the daemon, then send HTTP POST requests to display notifications.
+### Daemon Mode (Default)
 
-### API Endpoint
+Start the daemon to display notifications locally:
+
+```bash
+./cross-notifier
+```
+
+On first run, a settings window appears to configure an optional remote server connection.
+
+### Server Mode
+
+Run as a notification server that broadcasts to connected clients:
+
+```bash
+./cross-notifier -server -secret <shared-secret> -port 9876
+```
+
+### Daemon with Remote Server
+
+Connect to a remote server while still accepting local notifications:
+
+```bash
+./cross-notifier -connect ws://server:9876/ws -secret <shared-secret>
+```
+
+### Configuration
+
+Settings are stored in `~/Library/Application Support/cross-notifier/config.json` (macOS).
+
+To reconfigure, delete the config file or run:
+
+```bash
+./cross-notifier -setup
+```
+
+## API
+
+### Local Daemon Endpoint
 
 ```
 POST http://localhost:9876/notify
 Content-Type: application/json
+```
+
+No authentication required for local notifications.
+
+### Remote Server Endpoint
+
+```
+POST http://server:9876/notify
+Content-Type: application/json
+Authorization: Bearer <shared-secret>
 ```
 
 ### JSON Fields
@@ -48,30 +95,42 @@ Content-Type: application/json
 |-------|------|----------|---------|-------------|
 | `title` | string | No* | - | Notification title |
 | `message` | string | No* | - | Notification body text |
-| `icon` | string | No | - | Absolute path to icon image (PNG, JPG) |
+| `iconPath` | string | No | - | Local file path to icon (PNG, JPG) |
+| `iconHref` | string | No | - | URL to fetch icon from (server fetches and resizes) |
+| `iconData` | string | No | - | Base64-encoded icon image |
 | `duration` | int | No | 5 | Seconds before auto-dismiss |
 
 *At least one of `title` or `message` is required.
 
+**Icon priority:** `iconData` > `iconHref` > `iconPath`
+
+When sending to a remote server, use `iconHref` (URL) or `iconData` (base64). The server fetches URLs and resizes images to 48x48 before broadcasting to clients.
+
 ### Examples
 
-#### curl
+#### Local Notification
 
 ```bash
-# Simple notification
 curl -X POST http://localhost:9876/notify \
   -H "Content-Type: application/json" \
   -d '{"title":"Hello","message":"World"}'
+```
 
-# With icon
+#### Local with Icon
+
+```bash
 curl -X POST http://localhost:9876/notify \
   -H "Content-Type: application/json" \
-  -d '{"title":"Build Complete","message":"Success!","icon":"/path/to/icon.png"}'
+  -d '{"title":"Build Complete","iconPath":"/path/to/icon.png"}'
+```
 
-# Custom duration (10 seconds)
-curl -X POST http://localhost:9876/notify \
+#### Remote Notification
+
+```bash
+curl -X POST http://server:9876/notify \
   -H "Content-Type: application/json" \
-  -d '{"title":"Slow","message":"Stays for 10s","duration":10}'
+  -H "Authorization: Bearer mysecret" \
+  -d '{"title":"CI Build","message":"Success!","iconHref":"https://example.com/icon.png"}'
 ```
 
 #### Python
@@ -79,39 +138,27 @@ curl -X POST http://localhost:9876/notify \
 ```python
 import requests
 
+# Local
 requests.post("http://localhost:9876/notify", json={
     "title": "Task Complete",
     "message": "Your build finished successfully",
-    "icon": "/path/to/icon.png"
+    "iconPath": "/path/to/icon.png"
 })
-```
 
-#### JavaScript/Node
-
-```javascript
-fetch("http://localhost:9876/notify", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    title: "New Message",
-    message: "You have a notification"
-  })
-});
-```
-
-#### Go
-
-```go
-import "net/http"
-import "strings"
-
-http.Post("http://localhost:9876/notify", "application/json",
-    strings.NewReader(`{"title":"Hello","message":"From Go"}`))
+# Remote
+requests.post("http://server:9876/notify",
+    headers={"Authorization": "Bearer mysecret"},
+    json={
+        "title": "Deploy Complete",
+        "message": "Production updated",
+        "iconHref": "https://example.com/success.png"
+    }
+)
 ```
 
 ## Testing
 
-Use the included test script:
+Use the included test script for local notifications:
 
 ```bash
 ./test-notify.sh "Title" "Message"
@@ -123,3 +170,4 @@ Use the included test script:
 - **Click** a notification to dismiss it
 - Notifications auto-dismiss after their duration expires
 - When more than 4 notifications are queued, a "+ N more" indicator appears
+- Connection status notifications appear when connecting/disconnecting from a remote server
