@@ -232,8 +232,16 @@ func TestExecuteActionHTTPRequest(t *testing.T) {
 }
 
 func TestExecuteActionOpenURL(t *testing.T) {
-	// For open actions, we need to verify that it doesn't make an HTTP request
-	// and returns successfully (the actual browser opening is OS-dependent)
+	// Mock openURLFunc to avoid actually opening browser
+	var openedURL string
+	originalOpenURLFunc := openURLFunc
+	openURLFunc = func(url string) error {
+		openedURL = url
+		return nil
+	}
+	defer func() { openURLFunc = originalOpenURLFunc }()
+
+	// Verify that Open actions don't make HTTP requests
 	requestReceived := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestReceived = true
@@ -247,9 +255,6 @@ func TestExecuteActionOpenURL(t *testing.T) {
 		Open:  true,
 	}
 
-	// ExecuteAction with Open=true should not make an HTTP request
-	// It should call the OS to open the URL in a browser
-	// For testing, we'll verify it doesn't hit our test server
 	err := ExecuteAction(action)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -257,6 +262,10 @@ func TestExecuteActionOpenURL(t *testing.T) {
 
 	if requestReceived {
 		t.Error("Open action should not make HTTP request")
+	}
+
+	if openedURL != server.URL {
+		t.Errorf("openURL called with %q, want %q", openedURL, server.URL)
 	}
 }
 

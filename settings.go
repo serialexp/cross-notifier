@@ -1,5 +1,5 @@
 // ABOUTME: Settings window for configuring the notification daemon.
-// ABOUTME: Allows users to set server URL and authentication secret.
+// ABOUTME: Allows users to configure client name and multiple notification servers.
 
 package main
 
@@ -11,68 +11,115 @@ import (
 
 // SettingsResult holds the outcome of the settings window.
 type SettingsResult struct {
-	ServerURL string
-	Secret    string
-	Name      string
+	Config    *Config
 	Cancelled bool
+}
+
+// settingsState holds the editable state for the settings window.
+type settingsState struct {
+	name    string
+	servers []serverEntry
+}
+
+// serverEntry holds editable fields for a single server.
+type serverEntry struct {
+	url    string
+	secret string
+	label  string
 }
 
 // ShowSettingsWindow displays a configuration window and blocks until the user
 // saves or cancels. Returns the configuration values entered.
 func ShowSettingsWindow(initial *Config) SettingsResult {
 	var result SettingsResult
-	var serverURL, secret, name string
 	done := false
 
+	// Initialize state from config
+	state := &settingsState{}
 	if initial != nil {
-		serverURL = initial.ServerURL
-		secret = initial.Secret
-		name = initial.Name
+		state.name = initial.Name
+		for _, s := range initial.Servers {
+			state.servers = append(state.servers, serverEntry{
+				url:    s.URL,
+				secret: s.Secret,
+				label:  s.Label,
+			})
+		}
 	}
 
-	wnd := g.NewMasterWindow("Cross-Notifier Settings", 400, 250, 0)
+	// Calculate window height based on number of servers
+	baseHeight := 200
+	serverRowHeight := 35
+	windowHeight := baseHeight + len(state.servers)*serverRowHeight
+	if windowHeight < 250 {
+		windowHeight = 250
+	}
+	if windowHeight > 500 {
+		windowHeight = 500
+	}
+
+	wnd := g.NewMasterWindow("Cross-Notifier Settings", 500, windowHeight, 0)
 	wnd.SetBgColor(color.RGBA{R: 30, G: 30, B: 35, A: 255})
 
 	wnd.Run(func() {
+		// Recalculate and resize window if server count changes
+		newHeight := baseHeight + len(state.servers)*serverRowHeight
+		if newHeight < 250 {
+			newHeight = 250
+		}
+		if newHeight > 500 {
+			newHeight = 500
+		}
+
 		g.SingleWindow().Layout(
-			g.Label("Configure notification server connection:"),
+			g.Label("Configure notification client:"),
 			g.Spacing(),
 
 			g.Row(
 				g.Label("Your Name:"),
-				g.InputText(&name).Size(250).Hint("e.g. Bart"),
+				g.InputText(&state.name).Size(350).Hint("e.g. Bart"),
 			),
 			g.Spacing(),
+			g.Separator(),
+			g.Spacing(),
 
+			g.Label("Notification Servers:"),
+			g.Spacing(),
+
+			// Server list
+			g.Custom(func() {
+				toDelete := -1
+				for i := range state.servers {
+					renderServerRow(state, i, &toDelete)
+				}
+				if toDelete >= 0 {
+					state.servers = append(state.servers[:toDelete], state.servers[toDelete+1:]...)
+				}
+			}),
+
+			// Add server button
 			g.Row(
-				g.Label("Server URL:"),
-				g.InputText(&serverURL).Size(250).Hint("ws://host:9876/ws"),
+				g.Button("+ Add Server").Size(100, 25).OnClick(func() {
+					state.servers = append(state.servers, serverEntry{})
+				}),
 			),
 			g.Spacing(),
-
-			g.Row(
-				g.Label("Secret:"),
-				g.InputText(&secret).Size(250).Flags(g.InputTextFlagsPassword),
-			),
-			g.Spacing(),
+			g.Separator(),
 			g.Spacing(),
 
+			// Action buttons
 			g.Row(
-				g.Button("Save & Start").Size(120, 30).OnClick(func() {
-					result.ServerURL = serverURL
-					result.Secret = secret
-					result.Name = name
+				g.Button("Save").Size(100, 30).OnClick(func() {
+					result.Config = stateToConfig(state)
 					result.Cancelled = false
 					done = true
 				}),
-				g.Button("Local Only").Size(120, 30).OnClick(func() {
-					result.ServerURL = ""
-					result.Secret = ""
-					result.Name = name
+				g.Button("Local Only").Size(100, 30).OnClick(func() {
+					result.Config = &Config{Name: state.name}
 					result.Cancelled = false
 					done = true
 				}),
-				g.Button("Cancel").Size(80, 30).OnClick(func() {
+				g.Button("Cancel").Size(100, 30).OnClick(func() {
 					result.Cancelled = true
 					done = true
 				}),
@@ -85,4 +132,39 @@ func ShowSettingsWindow(initial *Config) SettingsResult {
 	})
 
 	return result
+}
+
+// renderServerRow renders a single server entry row.
+func renderServerRow(state *settingsState, index int, toDelete *int) {
+	server := &state.servers[index]
+	idx := index // capture for closure
+
+	g.Row(
+		g.Label("Label:"),
+		g.InputText(&server.label).Size(80).Hint("Work"),
+		g.Label("URL:"),
+		g.InputText(&server.url).Size(150).Hint("ws://host:9876/ws"),
+		g.Label("Secret:"),
+		g.InputText(&server.secret).Size(80).Flags(g.InputTextFlagsPassword),
+		g.Buttonf("X##delete%d", index).Size(25, 20).OnClick(func() {
+			*toDelete = idx
+		}),
+	).Build()
+}
+
+// stateToConfig converts the settings state to a Config.
+func stateToConfig(state *settingsState) *Config {
+	cfg := &Config{
+		Name: state.name,
+	}
+	for _, s := range state.servers {
+		if s.url != "" {
+			cfg.Servers = append(cfg.Servers, Server{
+				URL:    s.url,
+				Secret: s.secret,
+				Label:  s.label,
+			})
+		}
+	}
+	return cfg
 }

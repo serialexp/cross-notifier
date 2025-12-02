@@ -13,6 +13,24 @@ CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 
+echo "Generating Icon.icns from logo.png..."
+if [ -f "logo.png" ]; then
+    rm -rf Icon.iconset
+    mkdir -p Icon.iconset
+    sips -z 16 16 logo.png --out Icon.iconset/icon_16x16.png > /dev/null
+    sips -z 32 32 logo.png --out Icon.iconset/icon_16x16@2x.png > /dev/null
+    sips -z 32 32 logo.png --out Icon.iconset/icon_32x32.png > /dev/null
+    sips -z 64 64 logo.png --out Icon.iconset/icon_32x32@2x.png > /dev/null
+    sips -z 128 128 logo.png --out Icon.iconset/icon_128x128.png > /dev/null
+    sips -z 256 256 logo.png --out Icon.iconset/icon_128x128@2x.png > /dev/null
+    sips -z 256 256 logo.png --out Icon.iconset/icon_256x256.png > /dev/null
+    sips -z 512 512 logo.png --out Icon.iconset/icon_256x256@2x.png > /dev/null
+    sips -z 512 512 logo.png --out Icon.iconset/icon_512x512.png > /dev/null
+    sips -z 1024 1024 logo.png --out Icon.iconset/icon_512x512@2x.png > /dev/null
+    iconutil -c icns Icon.iconset -o Icon.icns
+    rm -rf Icon.iconset
+fi
+
 echo "Building Go binary..."
 go build -o cross-notifier .
 
@@ -68,21 +86,34 @@ echo "App bundle created: ${APP_DIR}"
 # Create DMG if requested
 if [ "$1" == "--dmg" ]; then
     DMG_NAME="${APP_NAME}-${VERSION}.dmg"
-    DMG_TEMP="dmg-temp"
 
     echo "Creating DMG..."
-    rm -rf "${DMG_TEMP}"
-    mkdir -p "${DMG_TEMP}"
-    cp -R "${APP_DIR}" "${DMG_TEMP}/"
-
-    # Create symlink to Applications
-    ln -s /Applications "${DMG_TEMP}/Applications"
-
-    # Create DMG
     rm -f "${DMG_NAME}"
-    hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_TEMP}" -ov -format UDZO "${DMG_NAME}"
 
-    rm -rf "${DMG_TEMP}"
+    # Use create-dmg for a nice DMG with icon positioning
+    if command -v create-dmg &> /dev/null; then
+        create-dmg \
+            --volname "${APP_NAME}" \
+            --volicon "${RESOURCES_DIR}/Icon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "${APP_NAME}.app" 150 185 \
+            --hide-extension "${APP_NAME}.app" \
+            --app-drop-link 450 185 \
+            "${DMG_NAME}" \
+            "${APP_DIR}"
+    else
+        echo "Note: Install create-dmg (brew install create-dmg) for a nicer DMG"
+        DMG_TEMP="dmg-temp"
+        rm -rf "${DMG_TEMP}"
+        mkdir -p "${DMG_TEMP}"
+        cp -R "${APP_DIR}" "${DMG_TEMP}/"
+        ln -s /Applications "${DMG_TEMP}/Applications"
+        hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_TEMP}" -ov -format UDZO "${DMG_NAME}"
+        rm -rf "${DMG_TEMP}"
+    fi
+
     echo "DMG created: ${DMG_NAME}"
 fi
 

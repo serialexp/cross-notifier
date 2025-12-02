@@ -9,11 +9,17 @@ import (
 	"path/filepath"
 )
 
+// Server holds connection details for a single notification server.
+type Server struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
+	Label  string `json:"label,omitempty"` // optional display name for the server
+}
+
 // Config holds the persistent configuration for the daemon.
 type Config struct {
-	ServerURL string `json:"serverUrl,omitempty"`
-	Secret    string `json:"secret,omitempty"`
-	Name      string `json:"name,omitempty"` // client display name for identification
+	Name    string   `json:"name,omitempty"` // client display name for identification
+	Servers []Server `json:"servers,omitempty"`
 }
 
 // ConfigPath returns the platform-appropriate path for the config file.

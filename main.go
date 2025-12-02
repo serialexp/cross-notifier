@@ -95,16 +95,13 @@ var (
 	// Animation state for notifications
 	successAnimations = make(map[int64]float32) // notification ID -> animation progress (0-1)
 
-	// Server client for exclusive notification actions
-	serverClient *NotificationClient
+	// Server clients for exclusive notification actions (keyed by server URL)
+	serverClients   = make(map[string]*NotificationClient)
+	serverClientsMu sync.RWMutex
 
 	// Map server IDs to local IDs for exclusive notifications
 	serverIDToLocalID = make(map[string]int64)
 
-	// Settings state (used by settings window)
-	settingsName      string
-	settingsServerURL string
-	settingsSecret    string
 )
 
 func addNotification(n Notification) {
@@ -346,44 +343,6 @@ func loop() {
 	imgui.PopStyleVar()
 }
 
-const (
-	settingsW = 400
-	settingsH = 250
-)
-
-// settingsLoop renders the settings form.
-func settingsLoop() {
-	g.SingleWindow().Layout(
-		g.Label("Configure notification server connection:"),
-		g.Spacing(),
-		g.Row(
-			g.Label("Your Name:"),
-			g.InputText(&settingsName).Size(250).Hint("e.g. Bart"),
-		),
-		g.Spacing(),
-		g.Row(
-			g.Label("Server URL:"),
-			g.InputText(&settingsServerURL).Size(250).Hint("ws://host:9876/ws"),
-		),
-		g.Spacing(),
-		g.Row(
-			g.Label("Secret:"),
-			g.InputText(&settingsSecret).Size(250).Flags(g.InputTextFlagsPassword),
-		),
-		g.Spacing(),
-		g.Spacing(),
-		g.Row(
-			g.Button("Save").Size(100, 30).OnClick(func() {
-				doSaveSettings()
-				wnd.SetShouldClose(true)
-			}),
-			g.Button("Cancel").Size(100, 30).OnClick(func() {
-				wnd.SetShouldClose(true)
-			}),
-		),
-	)
-}
-
 // notificationHeight calculates the height needed for a notification.
 func notificationHeight(n Notification) float32 {
 	height := float32(notificationH)
@@ -546,10 +505,11 @@ func renderActionButton(n Notification, actionIdx int, action Action, state *Act
 	buttonID := fmt.Sprintf("%s##action_%d_%d", label, notifID, actionIdx)
 	if imgui.Button(buttonID) && state.State == ActionIdle {
 		// For exclusive notifications connected to server, send action to server
-		if n.Exclusive && n.ServerID != "" && serverClient != nil && serverClient.IsConnected() {
+		connectedClient := getConnectedClient()
+		if n.Exclusive && n.ServerID != "" && connectedClient != nil {
 			SetActionState(notifID, actionIdx, ActionLoading, nil)
 			go func() {
-				if err := serverClient.SendAction(n.ServerID, actionIdx); err != nil {
+				if err := connectedClient.SendAction(n.ServerID, actionIdx); err != nil {
 					log.Printf("Failed to send action to server: %v", err)
 					// Fall back to local execution
 					SetActionState(notifID, actionIdx, ActionIdle, nil)
@@ -681,57 +641,104 @@ func launchSettingsProcess() {
 	// Don't wait - let it run independently
 }
 
-// doSaveSettings saves the current settings (used by -setup mode).
-func doSaveSettings() {
-	cfg := &Config{
-		Name:      settingsName,
-		ServerURL: settingsServerURL,
-		Secret:    settingsSecret,
+// getConnectedClient returns any connected server client for sending actions.
+func getConnectedClient() *NotificationClient {
+	serverClientsMu.RLock()
+	defer serverClientsMu.RUnlock()
+	for _, client := range serverClients {
+		if client.IsConnected() {
+			return client
+		}
 	}
-	if err := cfg.Save(ConfigPath()); err != nil {
-		log.Printf("Failed to save config: %v", err)
-	} else {
-		log.Printf("Config saved")
-	}
+	return nil
 }
 
-// connectToServer establishes a WebSocket connection to the notification server.
-func connectToServer(serverURL, secret, clientName string) {
-	serverClient = NewNotificationClient(serverURL, secret, clientName, func(n Notification) {
+// connectToServer establishes a WebSocket connection to a notification server.
+func connectToServer(server Server, clientName string) {
+	client := NewNotificationClient(server.URL, server.Secret, clientName, func(n Notification) {
 		addNotification(n)
 	})
-	serverClient.SetOnResolved(func(resolved ResolvedMessage) {
+	client.SetOnResolved(func(resolved ResolvedMessage) {
 		handleResolvedMessage(resolved)
 		g.Update()
 	})
-	serverClient.OnConnect = func() {
+
+	serverLabel := server.Label
+	if serverLabel == "" {
+		serverLabel = server.URL
+	}
+
+	client.OnConnect = func() {
 		addNotification(Notification{
 			Title:    "Connected",
-			Message:  "Connected to notification server",
+			Message:  fmt.Sprintf("Connected to %s", serverLabel),
 			Duration: 3,
 		})
 	}
-	serverClient.OnDisconnect = func() {
+	client.OnDisconnect = func() {
 		addNotification(Notification{
 			Title:    "Disconnected",
-			Message:  "Lost connection to notification server",
+			Message:  fmt.Sprintf("Lost connection to %s", serverLabel),
 			Duration: 5,
 		})
 	}
+
+	serverClientsMu.Lock()
+	serverClients[server.URL] = client
+	serverClientsMu.Unlock()
+
 	go func() {
-		if err := serverClient.Connect(); err != nil {
-			log.Printf("Failed to connect to server: %v", err)
+		if err := client.Connect(); err != nil {
+			log.Printf("Failed to connect to server %s: %v", server.URL, err)
 			addNotification(Notification{
 				Title:    "Connection Failed",
-				Message:  fmt.Sprintf("Could not connect to %s", serverURL),
+				Message:  fmt.Sprintf("Could not connect to %s", serverLabel),
 				Duration: 5,
 			})
 		}
 	}()
 }
 
+// disconnectServer closes connection to a specific server.
+func disconnectServer(serverURL string) {
+	serverClientsMu.Lock()
+	client, exists := serverClients[serverURL]
+	if exists {
+		delete(serverClients, serverURL)
+	}
+	serverClientsMu.Unlock()
+
+	if client != nil {
+		client.Close()
+	}
+}
+
+// connectAllServers connects to all configured servers.
+func connectAllServers(servers []Server, clientName string) {
+	for _, server := range servers {
+		if server.URL != "" && server.Secret != "" {
+			connectToServer(server, clientName)
+		}
+	}
+}
+
+// disconnectAllServers closes all server connections.
+func disconnectAllServers() {
+	serverClientsMu.Lock()
+	clients := make([]*NotificationClient, 0, len(serverClients))
+	for _, client := range serverClients {
+		clients = append(clients, client)
+	}
+	serverClients = make(map[string]*NotificationClient)
+	serverClientsMu.Unlock()
+
+	for _, client := range clients {
+		client.Close()
+	}
+}
+
 // watchConfig monitors the config file for changes and reconnects if needed.
-func watchConfig(currentServerURL, currentSecret, currentName string) {
+func watchConfig(currentCfg *Config) {
 	configPath := ConfigPath()
 
 	watcher, err := fsnotify.NewWatcher()
@@ -749,6 +756,13 @@ func watchConfig(currentServerURL, currentSecret, currentName string) {
 		watcher.Close()
 		return
 	}
+
+	// Build a map of current servers for comparison
+	currentServers := make(map[string]Server)
+	for _, s := range currentCfg.Servers {
+		currentServers[s.URL] = s
+	}
+	currentName := currentCfg.Name
 
 	go func() {
 		defer watcher.Close()
@@ -771,26 +785,42 @@ func watchConfig(currentServerURL, currentSecret, currentName string) {
 						continue
 					}
 
-					// Check if server settings changed
-					if cfg.ServerURL != currentServerURL || cfg.Secret != currentSecret || cfg.Name != currentName {
-						log.Println("Server settings changed, reconnecting...")
-
-						// Disconnect existing client
-						if serverClient != nil {
-							serverClient.Close()
-							serverClient = nil
-						}
-
-						// Connect with new settings
-						if cfg.ServerURL != "" && cfg.Secret != "" {
-							connectToServer(cfg.ServerURL, cfg.Secret, cfg.Name)
-						}
-
-						// Update current values
-						currentServerURL = cfg.ServerURL
-						currentSecret = cfg.Secret
-						currentName = cfg.Name
+					// Build map of new servers
+					newServers := make(map[string]Server)
+					for _, s := range cfg.Servers {
+						newServers[s.URL] = s
 					}
+
+					// Find servers to disconnect (in current but not in new, or secret changed)
+					for url, oldServer := range currentServers {
+						newServer, exists := newServers[url]
+						if !exists || newServer.Secret != oldServer.Secret {
+							log.Printf("Disconnecting from %s", url)
+							disconnectServer(url)
+						}
+					}
+
+					// Find servers to connect (in new but not in current, or secret changed)
+					for url, newServer := range newServers {
+						oldServer, exists := currentServers[url]
+						if !exists || newServer.Secret != oldServer.Secret {
+							if newServer.URL != "" && newServer.Secret != "" {
+								log.Printf("Connecting to %s", url)
+								connectToServer(newServer, cfg.Name)
+							}
+						}
+					}
+
+					// Update client name if changed (requires reconnecting all)
+					if cfg.Name != currentName {
+						log.Printf("Client name changed to %s, reconnecting all servers", cfg.Name)
+						disconnectAllServers()
+						connectAllServers(cfg.Servers, cfg.Name)
+					}
+
+					// Update current state
+					currentServers = newServers
+					currentName = cfg.Name
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -802,7 +832,7 @@ func watchConfig(currentServerURL, currentSecret, currentName string) {
 	}()
 }
 
-func runDaemon(port, serverURL, secret, clientName string) {
+func runDaemon(port string, cfg *Config) {
 	// Start system tray
 	StartTray(func() {
 		launchSettingsProcess()
@@ -811,13 +841,11 @@ func runDaemon(port, serverURL, secret, clientName string) {
 	// Start local HTTP server in background
 	go startHTTPServer(port)
 
-	// Connect to remote server if configured
-	if serverURL != "" {
-		connectToServer(serverURL, secret, clientName)
-	}
+	// Connect to all configured servers
+	connectAllServers(cfg.Servers, cfg.Name)
 
 	// Watch config file for changes
-	watchConfig(serverURL, secret, clientName)
+	watchConfig(cfg)
 
 	// Create notification window
 	wnd = g.NewMasterWindow(
@@ -880,39 +908,48 @@ func main() {
 	cfg, err := LoadConfig(configPath)
 	configExists := err == nil
 
+	// Initialize config if not loaded
+	if cfg == nil {
+		cfg = &Config{}
+	}
+
+	// CLI flags override config
+	if *name != "" {
+		cfg.Name = *name
+	}
+	// Add CLI-specified server if both connect and secret are provided
+	if *connect != "" && *secret != "" {
+		// Check if this server is already in the list
+		found := false
+		for i, s := range cfg.Servers {
+			if s.URL == *connect {
+				cfg.Servers[i].Secret = *secret
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.Servers = append(cfg.Servers, Server{URL: *connect, Secret: *secret, Label: "CLI"})
+		}
+	} else if *connect != "" && *secret == "" {
+		log.Fatal("Connecting to server requires a secret (-secret flag)")
+	}
+
 	// Determine if we need to show settings
 	showSettings := *setup || !configExists
 
-	// CLI flags override config
-	serverURL := *connect
-	secretKey := *secret
-	clientName := *name
-	if cfg != nil && serverURL == "" {
-		serverURL = cfg.ServerURL
-	}
-	if cfg != nil && secretKey == "" {
-		secretKey = cfg.Secret
-	}
-	if cfg != nil && clientName == "" {
-		clientName = cfg.Name
-	}
-
 	if showSettings {
-		initial := &Config{ServerURL: serverURL, Secret: secretKey, Name: clientName}
-		result := ShowSettingsWindow(initial)
+		result := ShowSettingsWindow(cfg)
 
 		if result.Cancelled {
 			log.Println("Setup cancelled")
 			return
 		}
 
-		serverURL = result.ServerURL
-		secretKey = result.Secret
-		clientName = result.Name
+		cfg = result.Config
 
 		// Save config
-		newCfg := &Config{ServerURL: serverURL, Secret: secretKey, Name: clientName}
-		if err := newCfg.Save(configPath); err != nil {
+		if err := cfg.Save(configPath); err != nil {
 			log.Printf("Warning: failed to save config: %v", err)
 		} else {
 			log.Printf("Config saved to %s", configPath)
@@ -924,9 +961,5 @@ func main() {
 		}
 	}
 
-	if serverURL != "" && secretKey == "" {
-		log.Fatal("Connecting to server requires a secret")
-	}
-
-	runDaemon(*port, serverURL, secretKey, clientName)
+	runDaemon(*port, cfg)
 }

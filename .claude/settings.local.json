@@ -11,7 +11,10 @@
       "Bash(go get:*)",
       "Bash(pkill:*)",
       "Bash(curl:*)",
-      "WebFetch(domain:stackoverflow.com)"
+      "WebFetch(domain:stackoverflow.com)",
+      "Bash(./build-macos.sh:*)",
+      "Bash(go test:*)",
+      "Bash(./cross-notifier:*)"
     ],
     "deny": [],
     "ask": []

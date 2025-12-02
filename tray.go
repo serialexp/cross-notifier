@@ -4,10 +4,14 @@
 package main
 
 import (
+	_ "embed"
 	"os"
 
 	"fyne.io/systray"
 )
+
+//go:embed tray.png
+var trayIconData []byte
 
 var (
 	trayEnd func()
@@ -21,7 +25,7 @@ func StartTray(onSettings func()) {
 
 	start, end := systray.RunWithExternalLoop(func() {
 		// onReady - called after nativeStart()
-		systray.SetTitle("CN")
+		systray.SetIcon(trayIconData)
 		systray.SetTooltip("Cross-Notifier")
 
 		mSettings = systray.AddMenuItem("Settings...", "Open settings window")

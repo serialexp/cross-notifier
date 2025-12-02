@@ -116,8 +116,16 @@ func ExecuteAction(a Action) error {
 	return executeHTTPAction(a)
 }
 
+// openURLFunc is the function used to open URLs. Replaceable for testing.
+var openURLFunc = openURLDefault
+
 // openURL opens the URL in the default browser.
 func openURL(url string) error {
+	return openURLFunc(url)
+}
+
+// openURLDefault is the default implementation that opens URLs in the browser.
+func openURLDefault(url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
