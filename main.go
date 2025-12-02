@@ -640,6 +640,43 @@ func launchSettingsProcess() {
 	// Don't wait - let it run independently
 }
 
+// showSettings opens the settings window in the current process with connection status.
+func showSettings(cfg *Config) {
+	result := ShowSettingsWindow(cfg, func(url string) bool {
+		serverClientsMu.RLock()
+		defer serverClientsMu.RUnlock()
+
+		client, exists := serverClients[url]
+		return exists && client.IsConnected()
+	})
+
+	if result.Cancelled {
+		return
+	}
+
+	// Save new config
+	configPath := ConfigPath()
+	if err := result.Config.Save(configPath); err != nil {
+		log.Printf("Failed to save config: %v", err)
+		addNotification(Notification{
+			Title:    "Settings Error",
+			Message:  "Failed to save configuration",
+			Duration: 5,
+		})
+		return
+	}
+
+	// Reconnect with new settings
+	disconnectAllServers()
+	connectAllServers(result.Config.Servers, result.Config.Name)
+
+	addNotification(Notification{
+		Title:    "Settings Saved",
+		Message:  "Configuration updated successfully",
+		Duration: 3,
+	})
+}
+
 // getConnectedClient returns any connected server client for sending actions.
 func getConnectedClient() *NotificationClient {
 	serverClientsMu.RLock()
@@ -834,7 +871,19 @@ func watchConfig(currentCfg *Config) {
 func runDaemon(port string, cfg *Config) {
 	// Start system tray
 	StartTray(func() {
-		launchSettingsProcess()
+		showSettings(cfg)
+	}, func() int {
+		// Return number of connected servers
+		serverClientsMu.RLock()
+		defer serverClientsMu.RUnlock()
+
+		count := 0
+		for _, client := range serverClients {
+			if client.IsConnected() {
+				count++
+			}
+		}
+		return count
 	})
 
 	// Start local HTTP server in background
@@ -936,7 +985,7 @@ func main() {
 	// Only show settings window if explicitly requested with -setup flag
 	// The tray icon provides access to settings, and defaults work fine for local use
 	if *setup {
-		result := ShowSettingsWindow(cfg)
+		result := ShowSettingsWindow(cfg, nil) // No connection status available in -setup mode
 
 		if result.Cancelled {
 			log.Println("Setup cancelled")

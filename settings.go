@@ -23,14 +23,16 @@ type settingsState struct {
 
 // serverEntry holds editable fields for a single server.
 type serverEntry struct {
-	url    string
-	secret string
-	label  string
+	url       string
+	secret    string
+	label     string
+	connected bool // connection status
 }
 
 // ShowSettingsWindow displays a configuration window and blocks until the user
 // saves or cancels. Returns the configuration values entered.
-func ShowSettingsWindow(initial *Config) SettingsResult {
+// The isConnected function is called with server URL to check connection status.
+func ShowSettingsWindow(initial *Config, isConnected func(url string) bool) SettingsResult {
 	var result SettingsResult
 	done := false
 
@@ -39,10 +41,15 @@ func ShowSettingsWindow(initial *Config) SettingsResult {
 	if initial != nil {
 		state.name = initial.Name
 		for _, s := range initial.Servers {
+			connected := false
+			if isConnected != nil {
+				connected = isConnected(s.URL)
+			}
 			state.servers = append(state.servers, serverEntry{
-				url:    s.URL,
-				secret: s.Secret,
-				label:  s.Label,
+				url:       s.URL,
+				secret:    s.Secret,
+				label:     s.Label,
+				connected: connected,
 			})
 		}
 	}
@@ -58,7 +65,7 @@ func ShowSettingsWindow(initial *Config) SettingsResult {
 		windowHeight = 500
 	}
 
-	wnd := g.NewMasterWindow("Cross-Notifier Settings", 500, windowHeight, 0)
+	wnd := g.NewMasterWindow("Cross-Notifier Settings", 700, windowHeight, 0)
 	wnd.SetBgColor(color.RGBA{R: 30, G: 30, B: 35, A: 255})
 
 	wnd.Run(func() {
@@ -139,13 +146,22 @@ func renderServerRow(state *settingsState, index int, toDelete *int) {
 	server := &state.servers[index]
 	idx := index // capture for closure
 
+	// Show green dot if connected
+	statusIndicator := "○" // empty circle
+	if server.connected {
+		statusIndicator = "●" // filled circle (green)
+	}
+
 	g.Row(
+		g.Style().SetColor(g.StyleColorText, color.RGBA{R: 0, G: 255, B: 0, A: 255}).To(
+			g.Label(statusIndicator),
+		),
 		g.Label("Label:"),
-		g.InputText(&server.label).Size(80).Hint("Work"),
+		g.InputText(&server.label).Size(100).Hint("Work"),
 		g.Label("URL:"),
-		g.InputText(&server.url).Size(150).Hint("ws://host:9876/ws"),
+		g.InputText(&server.url).Size(200).Hint("ws://host:9876/ws"),
 		g.Label("Secret:"),
-		g.InputText(&server.secret).Size(80).Flags(g.InputTextFlagsPassword),
+		g.InputText(&server.secret).Size(120).Flags(g.InputTextFlagsPassword),
 		g.Buttonf("X##delete%d", index).Size(25, 20).OnClick(func() {
 			*toDelete = idx
 		}),
