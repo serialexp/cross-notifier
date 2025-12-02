@@ -146,14 +146,16 @@ func renderServerRow(state *settingsState, index int, toDelete *int) {
 	server := &state.servers[index]
 	idx := index // capture for closure
 
-	// Show green dot if connected
-	statusIndicator := "○" // empty circle
+	// Show connection status indicator
+	statusIndicator := "○" // empty circle for disconnected
+	statusColor := color.RGBA{R: 255, G: 0, B: 0, A: 255} // red
 	if server.connected {
-		statusIndicator = "●" // filled circle (green)
+		statusIndicator = "●" // filled circle for connected
+		statusColor = color.RGBA{R: 0, G: 255, B: 0, A: 255} // green
 	}
 
 	g.Row(
-		g.Style().SetColor(g.StyleColorText, color.RGBA{R: 0, G: 255, B: 0, A: 255}).To(
+		g.Style().SetColor(g.StyleColorText, statusColor).To(
 			g.Label(statusIndicator),
 		),
 		g.Label("Label:"),

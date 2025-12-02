@@ -188,25 +188,31 @@ func (s *NotificationServer) handleActionMessage(clientName string, msg ActionMe
 // HandleNotify handles HTTP POST requests to send notifications.
 func (s *NotificationServer) HandleNotify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		log.Printf("HandleNotify: rejected non-POST request")
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
 
 	if !s.checkAuth(r) {
+		log.Printf("HandleNotify: rejected unauthorized request")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	var n Notification
 	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+		log.Printf("HandleNotify: failed to decode JSON: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if n.Title == "" && n.Message == "" {
+		log.Printf("HandleNotify: rejected notification with empty title and message")
 		http.Error(w, "title or message required", http.StatusBadRequest)
 		return
 	}
+
+	log.Printf("HandleNotify: received notification - Title: %q, Message: %q", n.Title, n.Message)
 
 	// Process icon: fetch URL if provided, convert to base64
 	if n.IconHref != "" {
@@ -240,7 +246,7 @@ func (s *NotificationServer) HandleNotify(w http.ResponseWriter, r *http.Request
 func (s *NotificationServer) Broadcast(n Notification) {
 	data, err := EncodeMessage(MessageTypeNotification, n)
 	if err != nil {
-		log.Printf("Failed to encode notification message: %v", err)
+		log.Printf("Broadcast: failed to encode notification message: %v", err)
 		return
 	}
 
@@ -249,14 +255,22 @@ func (s *NotificationServer) Broadcast(n Notification) {
 	for conn := range s.clients {
 		clients = append(clients, conn)
 	}
+	clientCount := len(clients)
 	s.mu.RUnlock()
 
+	log.Printf("Broadcast: sending notification to %d connected client(s)", clientCount)
+
+	successCount := 0
 	for _, conn := range clients {
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("Failed to send to client: %v", err)
+			log.Printf("Broadcast: failed to send to client: %v", err)
 			// Connection will be cleaned up by read loop
+		} else {
+			successCount++
 		}
 	}
+
+	log.Printf("Broadcast: successfully sent to %d/%d client(s)", successCount, clientCount)
 }
 
 // BroadcastResolved sends a resolved message to all connected clients.

@@ -128,6 +128,7 @@ func (c *NotificationClient) readLoop() {
 				log.Printf("Failed to unmarshal notification: %v", err)
 				continue
 			}
+			log.Printf("Received notification: %s - %s", n.Title, n.Message)
 			if c.onNotify != nil {
 				c.onNotify(n)
 			}

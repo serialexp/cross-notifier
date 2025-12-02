@@ -288,8 +288,26 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+func statusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	serverClientsMu.RLock()
+	status := make(map[string]bool)
+	for url, client := range serverClients {
+		status[url] = client.IsConnected()
+	}
+	serverClientsMu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
 func startHTTPServer(port string) {
 	http.HandleFunc("/notify", httpHandler)
+	http.HandleFunc("/status", statusHandler)
 	addr := ":" + port
 	log.Printf("Listening on http://localhost%s/notify", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
@@ -607,19 +625,23 @@ func updateWindowSize() {
 }
 
 func positionWindow() {
-	// Get actual screen dimensions from GLFW
-	margin := 20
-	screenWidth := 1920 // fallback
-
-	// Try to get primary monitor dimensions
-	if monitor := glfw.GetPrimaryMonitor(); monitor != nil {
-		if mode := monitor.GetVideoMode(); mode != nil {
-			screenWidth = mode.Width
-		}
+	// Get primary monitor dimensions using GLFW
+	monitor := glfw.GetPrimaryMonitor()
+	if monitor == nil {
+		// Fallback to a reasonable default position if monitor detection fails
+		wnd.SetPos(100, 100)
+		return
 	}
 
-	// Position in top-right corner
-	x := screenWidth - notificationW - margin
+	videoMode := monitor.GetVideoMode()
+	if videoMode == nil {
+		wnd.SetPos(100, 100)
+		return
+	}
+
+	// Position in top-right corner with some margin
+	margin := 20
+	x := videoMode.Width - notificationW - margin
 	y := margin
 
 	wnd.SetPos(x, y)
@@ -642,8 +664,29 @@ func runServer(port, secret string) {
 	}
 }
 
+// makeConnectionStatusChecker returns a function that queries the daemon's
+// /status endpoint to check if a server URL is connected.
+func makeConnectionStatusChecker(daemonPort string) func(string) bool {
+	return func(url string) bool {
+		resp, err := http.Get(fmt.Sprintf("http://localhost:%s/status", daemonPort))
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+
+		var status map[string]bool
+		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+			return false
+		}
+
+		return status[url]
+	}
+}
+
 // launchSettingsProcess starts a separate settings window process.
-func launchSettingsProcess() {
+// It passes the daemon's port via environment variable so the settings
+// window can query connection status via HTTP.
+func launchSettingsProcess(port string) {
 	execPath, err := os.Executable()
 	if err != nil {
 		log.Printf("Failed to get executable path: %v", err)
@@ -653,47 +696,11 @@ func launchSettingsProcess() {
 	cmd := exec.Command(execPath, "-setup")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), fmt.Sprintf("CROSS_NOTIFIER_DAEMON_PORT=%s", port))
 	if err := cmd.Start(); err != nil {
 		log.Printf("Failed to start settings: %v", err)
 	}
 	// Don't wait - let it run independently
-}
-
-// showSettings opens the settings window in the current process with connection status.
-func showSettings(cfg *Config) {
-	result := ShowSettingsWindow(cfg, func(url string) bool {
-		serverClientsMu.RLock()
-		defer serverClientsMu.RUnlock()
-
-		client, exists := serverClients[url]
-		return exists && client.IsConnected()
-	})
-
-	if result.Cancelled {
-		return
-	}
-
-	// Save new config
-	configPath := ConfigPath()
-	if err := result.Config.Save(configPath); err != nil {
-		log.Printf("Failed to save config: %v", err)
-		addNotification(Notification{
-			Title:    "Settings Error",
-			Message:  "Failed to save configuration",
-			Duration: 5,
-		})
-		return
-	}
-
-	// Reconnect with new settings
-	disconnectAllServers()
-	connectAllServers(result.Config.Servers, result.Config.Name)
-
-	addNotification(Notification{
-		Title:    "Settings Saved",
-		Message:  "Configuration updated successfully",
-		Duration: 3,
-	})
 }
 
 // getConnectedClient returns any connected server client for sending actions.
@@ -824,6 +831,10 @@ func watchConfig(currentCfg *Config) {
 	go func() {
 		defer watcher.Close()
 
+		// Debounce timer to prevent multiple reloads from rapid file events
+		var debounceTimer *time.Timer
+		debounceDelay := 200 * time.Millisecond
+
 		for {
 			select {
 			case event, ok := <-watcher.Events:
@@ -835,49 +846,55 @@ func watchConfig(currentCfg *Config) {
 					continue
 				}
 				if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
-					log.Println("Config file changed, reloading...")
-					cfg, err := LoadConfig(configPath)
-					if err != nil {
-						log.Printf("Failed to reload config: %v", err)
-						continue
+					// Reset debounce timer
+					if debounceTimer != nil {
+						debounceTimer.Stop()
 					}
-
-					// Build map of new servers
-					newServers := make(map[string]Server)
-					for _, s := range cfg.Servers {
-						newServers[s.URL] = s
-					}
-
-					// Find servers to disconnect (in current but not in new, or secret changed)
-					for url, oldServer := range currentServers {
-						newServer, exists := newServers[url]
-						if !exists || newServer.Secret != oldServer.Secret {
-							log.Printf("Disconnecting from %s", url)
-							disconnectServer(url)
+					debounceTimer = time.AfterFunc(debounceDelay, func() {
+						log.Println("Config file changed, reloading...")
+						cfg, err := LoadConfig(configPath)
+						if err != nil {
+							log.Printf("Failed to reload config: %v", err)
+							return
 						}
-					}
 
-					// Find servers to connect (in new but not in current, or secret changed)
-					for url, newServer := range newServers {
-						oldServer, exists := currentServers[url]
-						if !exists || newServer.Secret != oldServer.Secret {
-							if newServer.URL != "" && newServer.Secret != "" {
-								log.Printf("Connecting to %s", url)
-								connectToServer(newServer, cfg.Name)
+						// Build map of new servers
+						newServers := make(map[string]Server)
+						for _, s := range cfg.Servers {
+							newServers[s.URL] = s
+						}
+
+						// Find servers to disconnect (in current but not in new, or secret changed)
+						for url, oldServer := range currentServers {
+							newServer, exists := newServers[url]
+							if !exists || newServer.Secret != oldServer.Secret {
+								log.Printf("Disconnecting from %s", url)
+								disconnectServer(url)
 							}
 						}
-					}
 
-					// Update client name if changed (requires reconnecting all)
-					if cfg.Name != currentName {
-						log.Printf("Client name changed to %s, reconnecting all servers", cfg.Name)
-						disconnectAllServers()
-						connectAllServers(cfg.Servers, cfg.Name)
-					}
+						// Find servers to connect (in new but not in current, or secret changed)
+						for url, newServer := range newServers {
+							oldServer, exists := currentServers[url]
+							if !exists || newServer.Secret != oldServer.Secret {
+								if newServer.URL != "" && newServer.Secret != "" {
+									log.Printf("Connecting to %s", url)
+									connectToServer(newServer, cfg.Name)
+								}
+							}
+						}
 
-					// Update current state
-					currentServers = newServers
-					currentName = cfg.Name
+						// Update client name if changed (requires reconnecting all)
+						if cfg.Name != currentName {
+							log.Printf("Client name changed to %s, reconnecting all servers", cfg.Name)
+							disconnectAllServers()
+							connectAllServers(cfg.Servers, cfg.Name)
+						}
+
+						// Update current state
+						currentServers = newServers
+						currentName = cfg.Name
+					})
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -892,7 +909,7 @@ func watchConfig(currentCfg *Config) {
 func runDaemon(port string, cfg *Config) {
 	// Start system tray
 	StartTray(func() {
-		showSettings(cfg)
+		launchSettingsProcess(port)
 	}, func() int {
 		// Return number of connected servers
 		serverClientsMu.RLock()
@@ -1006,14 +1023,23 @@ func main() {
 	// Only show settings window if explicitly requested with -setup flag
 	// The tray icon provides access to settings, and defaults work fine for local use
 	if *setup {
-		result := ShowSettingsWindow(cfg, nil) // No connection status available in -setup mode
+		// Check if daemon is running and get connection status
+		daemonPort := os.Getenv("CROSS_NOTIFIER_DAEMON_PORT")
+		if daemonPort == "" {
+			daemonPort = *port
+		}
 
-		if result.Cancelled {
-			log.Println("Setup cancelled")
+		isConnected := makeConnectionStatusChecker(daemonPort)
+		log.Printf("Opening settings window with config: Name=%q, Servers=%d", cfg.Name, len(cfg.Servers))
+		result := ShowSettingsWindow(cfg, isConnected)
+
+		if result.Cancelled || result.Config == nil {
+			log.Println("Setup cancelled or closed without saving")
 			return
 		}
 
 		cfg = result.Config
+		log.Printf("Settings window returned config: Name=%q, Servers=%d", cfg.Name, len(cfg.Servers))
 
 		// Save config
 		if err := cfg.Save(configPath); err != nil {
