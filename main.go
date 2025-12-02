@@ -902,10 +902,9 @@ func main() {
 		return
 	}
 
-	// Daemon mode - check for config file
+	// Daemon mode - load config file if it exists
 	configPath := ConfigPath()
-	cfg, err := LoadConfig(configPath)
-	configExists := err == nil
+	cfg, _ := LoadConfig(configPath)
 
 	// Initialize config if not loaded
 	if cfg == nil {
@@ -934,10 +933,9 @@ func main() {
 		log.Fatal("Connecting to server requires a secret (-secret flag)")
 	}
 
-	// Determine if we need to show settings
-	showSettings := *setup || !configExists
-
-	if showSettings {
+	// Only show settings window if explicitly requested with -setup flag
+	// The tray icon provides access to settings, and defaults work fine for local use
+	if *setup {
 		result := ShowSettingsWindow(cfg)
 
 		if result.Cancelled {
@@ -954,10 +952,8 @@ func main() {
 			log.Printf("Config saved to %s", configPath)
 		}
 
-		// If -setup was explicitly passed, just save and exit (daemon is already running)
-		if *setup {
-			return
-		}
+		// -setup flag just saves and exits (daemon is already running or will be started separately)
+		return
 	}
 
 	runDaemon(*port, cfg)
