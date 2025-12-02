@@ -13,6 +13,7 @@ import (
 type Config struct {
 	ServerURL string `json:"serverUrl,omitempty"`
 	Secret    string `json:"secret,omitempty"`
+	Name      string `json:"name,omitempty"` // client display name for identification
 }
 
 // ConfigPath returns the platform-appropriate path for the config file.

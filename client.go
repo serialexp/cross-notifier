@@ -15,9 +15,11 @@ import (
 
 // NotificationClient connects to a notification server and receives notifications.
 type NotificationClient struct {
-	serverURL string
-	secret    string
-	onNotify  func(Notification)
+	serverURL  string
+	secret     string
+	name       string
+	onNotify   func(Notification)
+	onResolved func(ResolvedMessage)
 
 	// Connection callbacks
 	OnConnect    func()
@@ -34,10 +36,11 @@ type NotificationClient struct {
 }
 
 // NewNotificationClient creates a new client that connects to the given server.
-func NewNotificationClient(serverURL, secret string, onNotify func(Notification)) *NotificationClient {
+func NewNotificationClient(serverURL, secret, name string, onNotify func(Notification)) *NotificationClient {
 	return &NotificationClient{
 		serverURL:         serverURL,
 		secret:            secret,
+		name:              name,
 		onNotify:          onNotify,
 		MinReconnectDelay: time.Second,
 		MaxReconnectDelay: 30 * time.Second,
@@ -56,6 +59,9 @@ func (c *NotificationClient) Connect() error {
 
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+c.secret)
+	if c.name != "" {
+		header.Set("X-Client-Name", c.name)
+	}
 
 	conn, _, err := websocket.DefaultDialer.Dial(c.serverURL, header)
 	if err != nil {
@@ -104,19 +110,37 @@ func (c *NotificationClient) readLoop() {
 			return
 		}
 
-		_, msg, err := conn.ReadMessage()
+		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
 
-		var n Notification
-		if err := json.Unmarshal(msg, &n); err != nil {
-			log.Printf("Failed to unmarshal notification: %v", err)
+		msg, err := DecodeMessage(raw)
+		if err != nil {
+			log.Printf("Failed to decode message: %v", err)
 			continue
 		}
 
-		if c.onNotify != nil {
-			c.onNotify(n)
+		switch msg.Type {
+		case MessageTypeNotification:
+			var n Notification
+			if err := json.Unmarshal(msg.Data, &n); err != nil {
+				log.Printf("Failed to unmarshal notification: %v", err)
+				continue
+			}
+			if c.onNotify != nil {
+				c.onNotify(n)
+			}
+
+		case MessageTypeResolved:
+			var resolved ResolvedMessage
+			if err := json.Unmarshal(msg.Data, &resolved); err != nil {
+				log.Printf("Failed to unmarshal resolved message: %v", err)
+				continue
+			}
+			if c.onResolved != nil {
+				c.onResolved(resolved)
+			}
 		}
 	}
 }
@@ -187,4 +211,32 @@ func (c *NotificationClient) IsConnected() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.conn != nil
+}
+
+// SetOnResolved sets the callback for resolved messages.
+func (c *NotificationClient) SetOnResolved(handler func(ResolvedMessage)) {
+	c.onResolved = handler
+}
+
+// SendAction sends an action message to the server for an exclusive notification.
+func (c *NotificationClient) SendAction(notificationID string, actionIndex int) error {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return nil // Not connected, action will be handled locally
+	}
+
+	msg := ActionMessage{
+		NotificationID: notificationID,
+		ActionIndex:    actionIndex,
+	}
+
+	data, err := EncodeMessage(MessageTypeAction, msg)
+	if err != nil {
+		return err
+	}
+
+	return conn.WriteMessage(websocket.TextMessage, data)
 }

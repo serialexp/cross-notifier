@@ -12,23 +12,28 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	g "github.com/AllenDang/giu"
+	"github.com/fsnotify/fsnotify"
 	"github.com/kbinani/screenshot"
 	xdraw "golang.org/x/image/draw"
 )
 
 const (
-	defaultPort   = "9876"
-	maxVisible    = 4
-	notificationW = 320
-	notificationH = 80
-	iconSize      = 48
-	padding       = 10
-	stackPeek     = 20 // pixels visible for stacked notifications
+	defaultPort      = "9876"
+	maxVisible       = 4
+	notificationW    = 320
+	notificationH    = 80  // base height without actions
+	actionRowH       = 28  // height of action button row
+	iconSize         = 48
+	padding          = 10
+	stackPeek        = 20 // pixels visible for stacked notifications
+	actionBtnPadding = 4  // padding between action buttons
 )
 
 // Theme colors
@@ -59,13 +64,16 @@ var (
 )
 
 type Notification struct {
-	ID        int64     `json:"-"`
+	ID        int64     `json:"-"`                   // local ID for GUI tracking
+	ServerID  string    `json:"id,omitempty"`        // server-assigned ID for coordination
 	Title     string    `json:"title"`
 	Message   string    `json:"message"`
-	IconData  string    `json:"iconData,omitempty"` // base64 encoded image
-	IconHref  string    `json:"iconHref,omitempty"` // URL to fetch image from
-	IconPath  string    `json:"iconPath,omitempty"` // local file path
-	Duration  int       `json:"duration,omitempty"` // seconds: >0 auto-close, 0/omitted=persistent
+	IconData  string    `json:"iconData,omitempty"`  // base64 encoded image
+	IconHref  string    `json:"iconHref,omitempty"`  // URL to fetch image from
+	IconPath  string    `json:"iconPath,omitempty"`  // local file path
+	Duration  int       `json:"duration,omitempty"`  // seconds: >0 auto-close, 0/omitted=persistent
+	Actions   []Action  `json:"actions,omitempty"`   // clickable action buttons
+	Exclusive bool      `json:"exclusive,omitempty"` // if true, resolved when any client takes action
 	CreatedAt time.Time `json:"-"`
 	ExpiresAt time.Time `json:"-"`
 }
@@ -83,6 +91,20 @@ var (
 	// Hover state tracking (previous frame)
 	hoveredCards = make(map[int64]bool)
 	textureMu    sync.Mutex
+
+	// Animation state for notifications
+	successAnimations = make(map[int64]float32) // notification ID -> animation progress (0-1)
+
+	// Server client for exclusive notification actions
+	serverClient *NotificationClient
+
+	// Map server IDs to local IDs for exclusive notifications
+	serverIDToLocalID = make(map[string]int64)
+
+	// Settings state (used by settings window)
+	settingsName      string
+	settingsServerURL string
+	settingsSecret    string
 )
 
 func addNotification(n Notification) {
@@ -92,6 +114,13 @@ func addNotification(n Notification) {
 	n.ID = nextID
 	nextID++
 	n.CreatedAt = time.Now()
+
+	// Track server ID -> local ID mapping for exclusive notifications
+	if n.ServerID != "" {
+		textureMu.Lock()
+		serverIDToLocalID[n.ServerID] = n.ID
+		textureMu.Unlock()
+	}
 
 	// duration > 0: auto-close after that many seconds
 	// duration <= 0: never auto-close (default)
@@ -132,6 +161,40 @@ func cleanupTexture(id int64) {
 	delete(textures, id)
 	delete(pendingIcons, id)
 	delete(hoveredCards, id)
+	delete(successAnimations, id)
+	// Clean up server ID mapping
+	for serverID, localID := range serverIDToLocalID {
+		if localID == id {
+			delete(serverIDToLocalID, serverID)
+			break
+		}
+	}
+	CleanupActionStates(id)
+}
+
+// handleResolvedMessage processes a resolved notification from the server.
+func handleResolvedMessage(resolved ResolvedMessage) {
+	textureMu.Lock()
+	localID, exists := serverIDToLocalID[resolved.NotificationID]
+	textureMu.Unlock()
+
+	if !exists {
+		log.Printf("Resolved message for unknown notification %s", resolved.NotificationID)
+		return
+	}
+
+	if resolved.Success {
+		// Trigger success animation then dismiss
+		triggerSuccessAnimation(localID)
+	} else {
+		// Dismiss and show error
+		dismissNotification(localID)
+		addNotification(Notification{
+			Title:    "Action Failed",
+			Message:  resolved.Error,
+			Duration: 5,
+		})
+	}
 }
 
 func loadPendingIcons() {
@@ -283,13 +346,61 @@ func loop() {
 	imgui.PopStyleVar()
 }
 
+const (
+	settingsW = 400
+	settingsH = 250
+)
+
+// settingsLoop renders the settings form.
+func settingsLoop() {
+	g.SingleWindow().Layout(
+		g.Label("Configure notification server connection:"),
+		g.Spacing(),
+		g.Row(
+			g.Label("Your Name:"),
+			g.InputText(&settingsName).Size(250).Hint("e.g. Bart"),
+		),
+		g.Spacing(),
+		g.Row(
+			g.Label("Server URL:"),
+			g.InputText(&settingsServerURL).Size(250).Hint("ws://host:9876/ws"),
+		),
+		g.Spacing(),
+		g.Row(
+			g.Label("Secret:"),
+			g.InputText(&settingsSecret).Size(250).Flags(g.InputTextFlagsPassword),
+		),
+		g.Spacing(),
+		g.Spacing(),
+		g.Row(
+			g.Button("Save").Size(100, 30).OnClick(func() {
+				doSaveSettings()
+				wnd.SetShouldClose(true)
+			}),
+			g.Button("Cancel").Size(100, 30).OnClick(func() {
+				wnd.SetShouldClose(true)
+			}),
+		),
+	)
+}
+
+// notificationHeight calculates the height needed for a notification.
+func notificationHeight(n Notification) float32 {
+	height := float32(notificationH)
+	if len(n.Actions) > 0 {
+		height += actionRowH
+	}
+	return height
+}
+
 func renderStackedNotification(n Notification, index int, total int) {
 	id := n.ID
 
 	// Scale down cards behind the first one for depth effect
 	scale := float32(1.0) - float32(index)*0.03
+	baseHeight := notificationHeight(n)
 	cardWidth := (notificationW - 2*padding) * scale
-	cardHeight := (notificationH - padding) * scale
+	cardHeight := (baseHeight - padding) * scale
 
 	// Position this card in the stack, centered horizontally
 	xOffset := ((notificationW - 2*padding) - cardWidth) / 2
@@ -301,6 +412,17 @@ func renderStackedNotification(n Notification, index int, total int) {
 	if hoveredCards[id] {
 		cardBg.W = 1.0
 	}
+
+	// Apply success animation tint
+	textureMu.Lock()
+	successProgress := successAnimations[id]
+	textureMu.Unlock()
+	if successProgress > 0 {
+		// Blend towards green
+		greenTint := float32(0.3) * successProgress
+		cardBg.Y += greenTint // Add green
+	}
+
 	imgui.PushStyleColorVec4(imgui.ColChildBg, cardBg)
 	imgui.PushStyleColorVec4(imgui.ColBorder, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 0.8})
 	imgui.PushStyleVarFloat(imgui.StyleVarChildRounding, 6)
@@ -349,16 +471,22 @@ func renderStackedNotification(n Notification, index int, total int) {
 			imgui.PopStyleColor()
 		}
 
+		// Action buttons
+		if len(n.Actions) > 0 {
+			renderActionButtons(n)
+		}
+
 		// Track hover state for next frame
 		isHovered := imgui.IsWindowHovered()
 		hoveredCards[id] = isHovered
 
-		if isHovered {
+		// Only show hand cursor if no actions (otherwise buttons handle their own cursors)
+		if isHovered && len(n.Actions) == 0 {
 			imgui.SetMouseCursor(imgui.MouseCursorHand)
 		}
 
-		// Click to dismiss
-		if isHovered && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
+		// Click to dismiss (only if no actions, to avoid conflicts with button clicks)
+		if len(n.Actions) == 0 && isHovered && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
 			go dismissNotification(id)
 		}
 	}
@@ -369,11 +497,123 @@ func renderStackedNotification(n Notification, index int, total int) {
 	imgui.PopStyleColor() // ChildBg
 }
 
+// renderActionButtons renders the action buttons for a notification.
+func renderActionButtons(n Notification) {
+	const innerPadding float32 = 10
+
+	// Position at bottom of card
+	imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: float32(notificationH) - innerPadding - 20})
+
+	for i, action := range n.Actions {
+		if i > 0 {
+			imgui.SameLineV(0, actionBtnPadding)
+		}
+
+		state := GetActionState(n.ID, i)
+		renderActionButton(n, i, action, state)
+	}
+}
+
+// renderActionButton renders a single action button with appropriate styling.
+func renderActionButton(n Notification, actionIdx int, action Action, state *ActionStateInfo) {
+	label := action.Label
+	notifID := n.ID
+
+	// Style button based on state
+	switch state.State {
+	case ActionLoading:
+		// Show loading indicator
+		label = "..."
+		imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1})
+		imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1})
+		imgui.PushStyleColorVec4(imgui.ColButtonActive, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1})
+	case ActionSuccess:
+		imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.2, Y: 0.6, Z: 0.2, W: 1})
+		imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.2, Y: 0.6, Z: 0.2, W: 1})
+		imgui.PushStyleColorVec4(imgui.ColButtonActive, imgui.Vec4{X: 0.2, Y: 0.6, Z: 0.2, W: 1})
+	case ActionError:
+		imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.6, Y: 0.2, Z: 0.2, W: 1})
+		imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.6, Y: 0.2, Z: 0.2, W: 1})
+		imgui.PushStyleColorVec4(imgui.ColButtonActive, imgui.Vec4{X: 0.6, Y: 0.2, Z: 0.2, W: 1})
+	default:
+		imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.25, Y: 0.25, Z: 0.28, W: 1})
+		imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.35, Y: 0.35, Z: 0.38, W: 1})
+		imgui.PushStyleColorVec4(imgui.ColButtonActive, imgui.Vec4{X: 0.2, Y: 0.2, Z: 0.23, W: 1})
+	}
+
+	imgui.PushStyleVarFloat(imgui.StyleVarFrameRounding, 4)
+
+	buttonID := fmt.Sprintf("%s##action_%d_%d", label, notifID, actionIdx)
+	if imgui.Button(buttonID) && state.State == ActionIdle {
+		// For exclusive notifications connected to server, send action to server
+		if n.Exclusive && n.ServerID != "" && serverClient != nil && serverClient.IsConnected() {
+			SetActionState(notifID, actionIdx, ActionLoading, nil)
+			go func() {
+				if err := serverClient.SendAction(n.ServerID, actionIdx); err != nil {
+					log.Printf("Failed to send action to server: %v", err)
+					// Fall back to local execution
+					SetActionState(notifID, actionIdx, ActionIdle, nil)
+				}
+				g.Update()
+			}()
+		} else {
+			// Execute action locally
+			ExecuteActionAsync(notifID, actionIdx, action,
+				func() {
+					// On success: trigger success animation then dismiss
+					triggerSuccessAnimation(notifID)
+				},
+				func(err error) {
+					// On error: dismiss and show error notification
+					dismissNotification(notifID)
+					addNotification(Notification{
+						Title:    "Action Failed",
+						Message:  err.Error(),
+						Duration: 5,
+					})
+				},
+			)
+		}
+		g.Update()
+	}
+
+	imgui.PopStyleVar()
+	imgui.PopStyleColor()
+	imgui.PopStyleColor()
+	imgui.PopStyleColor()
+}
+
+// triggerSuccessAnimation starts the success animation for a notification.
+func triggerSuccessAnimation(notifID int64) {
+	textureMu.Lock()
+	successAnimations[notifID] = 1.0
+	textureMu.Unlock()
+
+	go func() {
+		// Animate over 500ms then dismiss
+		start := time.Now()
+		duration := 500 * time.Millisecond
+		for time.Since(start) < duration {
+			progress := 1.0 - float32(time.Since(start))/float32(duration)
+			textureMu.Lock()
+			successAnimations[notifID] = progress
+			textureMu.Unlock()
+			g.Update()
+			time.Sleep(16 * time.Millisecond) // ~60fps
+		}
+		dismissNotification(notifID)
+	}()
+}
+
 func updateWindowSize() {
 	notifMu.Lock()
 	count := len(notifications)
 	if count > maxVisible {
 		count = maxVisible
+	}
+	var firstNotif Notification
+	if count > 0 {
+		firstNotif = notifications[0]
 	}
 	notifMu.Unlock()
 
@@ -388,7 +628,9 @@ func updateWindowSize() {
 	positionWindow()
 
 	// Stack layout: first card full height + peek for each additional card
-	height := notificationH + (count-1)*stackPeek + padding
+	// Use actual height of first notification (may have actions)
+	firstHeight := int(notificationHeight(firstNotif))
+	height := firstHeight + (count-1)*stackPeek + padding
 
 	wnd.SetSize(notificationW, height)
 }
@@ -422,7 +664,162 @@ func runServer(port, secret string) {
 	}
 }
 
-func runDaemon(port, serverURL, secret string) {
+// launchSettingsProcess starts a separate settings window process.
+func launchSettingsProcess() {
+	execPath, err := os.Executable()
+	if err != nil {
+		log.Printf("Failed to get executable path: %v", err)
+		return
+	}
+
+	cmd := exec.Command(execPath, "-setup")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to start settings: %v", err)
+	}
+	// Don't wait - let it run independently
+}
+
+// doSaveSettings saves the current settings (used by -setup mode).
+func doSaveSettings() {
+	cfg := &Config{
+		Name:      settingsName,
+		ServerURL: settingsServerURL,
+		Secret:    settingsSecret,
+	}
+	if err := cfg.Save(ConfigPath()); err != nil {
+		log.Printf("Failed to save config: %v", err)
+	} else {
+		log.Printf("Config saved")
+	}
+}
+
+// connectToServer establishes a WebSocket connection to the notification server.
+func connectToServer(serverURL, secret, clientName string) {
+	serverClient = NewNotificationClient(serverURL, secret, clientName, func(n Notification) {
+		addNotification(n)
+	})
+	serverClient.SetOnResolved(func(resolved ResolvedMessage) {
+		handleResolvedMessage(resolved)
+		g.Update()
+	})
+	serverClient.OnConnect = func() {
+		addNotification(Notification{
+			Title:    "Connected",
+			Message:  "Connected to notification server",
+			Duration: 3,
+		})
+	}
+	serverClient.OnDisconnect = func() {
+		addNotification(Notification{
+			Title:    "Disconnected",
+			Message:  "Lost connection to notification server",
+			Duration: 5,
+		})
+	}
+	go func() {
+		if err := serverClient.Connect(); err != nil {
+			log.Printf("Failed to connect to server: %v", err)
+			addNotification(Notification{
+				Title:    "Connection Failed",
+				Message:  fmt.Sprintf("Could not connect to %s", serverURL),
+				Duration: 5,
+			})
+		}
+	}()
+}
+
+// watchConfig monitors the config file for changes and reconnects if needed.
+func watchConfig(currentServerURL, currentSecret, currentName string) {
+	configPath := ConfigPath()
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Printf("Failed to create config watcher: %v", err)
+		return
+	}
+
+	// Watch the directory containing the config file (more reliable than watching the file directly)
+	configDir := filepath.Dir(configPath)
+	configFile := filepath.Base(configPath)
+
+	if err := watcher.Add(configDir); err != nil {
+		log.Printf("Failed to watch config directory: %v", err)
+		watcher.Close()
+		return
+	}
+
+	go func() {
+		defer watcher.Close()
+
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				// Check if it's our config file
+				if filepath.Base(event.Name) != configFile {
+					continue
+				}
+				if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
+					log.Println("Config file changed, reloading...")
+					cfg, err := LoadConfig(configPath)
+					if err != nil {
+						log.Printf("Failed to reload config: %v", err)
+						continue
+					}
+
+					// Check if server settings changed
+					if cfg.ServerURL != currentServerURL || cfg.Secret != currentSecret || cfg.Name != currentName {
+						log.Println("Server settings changed, reconnecting...")
+
+						// Disconnect existing client
+						if serverClient != nil {
+							serverClient.Close()
+							serverClient = nil
+						}
+
+						// Connect with new settings
+						if cfg.ServerURL != "" && cfg.Secret != "" {
+							connectToServer(cfg.ServerURL, cfg.Secret, cfg.Name)
+						}
+
+						// Update current values
+						currentServerURL = cfg.ServerURL
+						currentSecret = cfg.Secret
+						currentName = cfg.Name
+					}
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Printf("Config watcher error: %v", err)
+			}
+		}
+	}()
+}
+
+func runDaemon(port, serverURL, secret, clientName string) {
+	// Start system tray
+	StartTray(func() {
+		launchSettingsProcess()
+	})
+
+	// Start local HTTP server in background
+	go startHTTPServer(port)
+
+	// Connect to remote server if configured
+	if serverURL != "" {
+		connectToServer(serverURL, secret, clientName)
+	}
+
+	// Watch config file for changes
+	watchConfig(serverURL, secret, clientName)
+
+	// Create notification window
 	wnd = g.NewMasterWindow(
 		"Notifications",
 		notificationW, notificationH,
@@ -430,45 +827,7 @@ func runDaemon(port, serverURL, secret string) {
 			g.MasterWindowFlagsFrameless|
 			g.MasterWindowFlagsTransparent,
 	)
-
 	wnd.SetBgColor(color.RGBA{0, 0, 0, 0})
-
-	// Start local HTTP server in background
-	go startHTTPServer(port)
-
-	// Connect to remote server if configured
-	if serverURL != "" {
-		client := NewNotificationClient(serverURL, secret, func(n Notification) {
-			addNotification(n)
-		})
-
-		client.OnConnect = func() {
-			addNotification(Notification{
-				Title:    "Connected",
-				Message:  "Connected to notification server",
-				Duration: 3,
-			})
-		}
-
-		client.OnDisconnect = func() {
-			addNotification(Notification{
-				Title:    "Disconnected",
-				Message:  "Lost connection to notification server",
-				Duration: 5,
-			})
-		}
-
-		go func() {
-			if err := client.Connect(); err != nil {
-				log.Printf("Failed to connect to server: %v", err)
-				addNotification(Notification{
-					Title:    "Connection Failed",
-					Message:  fmt.Sprintf("Could not connect to %s", serverURL),
-					Duration: 5,
-				})
-			}
-		}()
-	}
 
 	// Periodically trigger redraws for expiration checks
 	go func() {
@@ -487,6 +846,7 @@ func main() {
 	port := flag.String("port", defaultPort, "Port to listen on (or CROSS_NOTIFIER_PORT env)")
 	connect := flag.String("connect", "", "WebSocket URL of server to connect to (or CROSS_NOTIFIER_SERVER env)")
 	secret := flag.String("secret", "", "Shared secret for authentication (or CROSS_NOTIFIER_SECRET env)")
+	name := flag.String("name", "", "Client display name for identification (or CROSS_NOTIFIER_NAME env)")
 	setup := flag.Bool("setup", false, "Open settings window")
 
 	flag.Parse()
@@ -502,6 +862,9 @@ func main() {
 	}
 	if *connect == "" {
 		*connect = os.Getenv("CROSS_NOTIFIER_SERVER")
+	}
+	if *name == "" {
+		*name = os.Getenv("CROSS_NOTIFIER_NAME")
 	}
 
 	if *serverMode {
@@ -523,15 +886,19 @@ func main() {
 	// CLI flags override config
 	serverURL := *connect
 	secretKey := *secret
+	clientName := *name
 	if cfg != nil && serverURL == "" {
 		serverURL = cfg.ServerURL
 	}
 	if cfg != nil && secretKey == "" {
 		secretKey = cfg.Secret
 	}
+	if cfg != nil && clientName == "" {
+		clientName = cfg.Name
+	}
 
 	if showSettings {
-		initial := &Config{ServerURL: serverURL, Secret: secretKey}
+		initial := &Config{ServerURL: serverURL, Secret: secretKey, Name: clientName}
 		result := ShowSettingsWindow(initial)
 
 		if result.Cancelled {
@@ -541,13 +908,19 @@ func main() {
 
 		serverURL = result.ServerURL
 		secretKey = result.Secret
+		clientName = result.Name
 
 		// Save config
-		newCfg := &Config{ServerURL: serverURL, Secret: secretKey}
+		newCfg := &Config{ServerURL: serverURL, Secret: secretKey, Name: clientName}
 		if err := newCfg.Save(configPath); err != nil {
 			log.Printf("Warning: failed to save config: %v", err)
 		} else {
 			log.Printf("Config saved to %s", configPath)
+		}
+
+		// If -setup was explicitly passed, just save and exit (daemon is already running)
+		if *setup {
+			return
 		}
 	}
 
@@ -555,5 +928,5 @@ func main() {
 		log.Fatal("Connecting to server requires a secret")
 	}
 
-	runDaemon(*port, serverURL, secretKey)
+	runDaemon(*port, serverURL, secretKey, clientName)
 }

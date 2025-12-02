@@ -13,6 +13,7 @@ import (
 type SettingsResult struct {
 	ServerURL string
 	Secret    string
+	Name      string
 	Cancelled bool
 }
 
@@ -20,20 +21,27 @@ type SettingsResult struct {
 // saves or cancels. Returns the configuration values entered.
 func ShowSettingsWindow(initial *Config) SettingsResult {
 	var result SettingsResult
-	var serverURL, secret string
+	var serverURL, secret, name string
 	done := false
 
 	if initial != nil {
 		serverURL = initial.ServerURL
 		secret = initial.Secret
+		name = initial.Name
 	}
 
-	wnd := g.NewMasterWindow("Cross-Notifier Settings", 400, 200, 0)
+	wnd := g.NewMasterWindow("Cross-Notifier Settings", 400, 250, 0)
 	wnd.SetBgColor(color.RGBA{R: 30, G: 30, B: 35, A: 255})
 
 	wnd.Run(func() {
 		g.SingleWindow().Layout(
 			g.Label("Configure notification server connection:"),
+			g.Spacing(),
+
+			g.Row(
+				g.Label("Your Name:"),
+				g.InputText(&name).Size(250).Hint("e.g. Bart"),
+			),
 			g.Spacing(),
 
 			g.Row(
@@ -53,12 +61,14 @@ func ShowSettingsWindow(initial *Config) SettingsResult {
 				g.Button("Save & Start").Size(120, 30).OnClick(func() {
 					result.ServerURL = serverURL
 					result.Secret = secret
+					result.Name = name
 					result.Cancelled = false
 					done = true
 				}),
 				g.Button("Local Only").Size(120, 30).OnClick(func() {
 					result.ServerURL = ""
 					result.Secret = ""
+					result.Name = name
 					result.Cancelled = false
 					done = true
 				}),

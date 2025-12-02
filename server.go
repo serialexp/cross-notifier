@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -19,18 +20,26 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// ClientInfo holds information about a connected client.
+type ClientInfo struct {
+	Name string
+}
+
 // NotificationServer manages WebSocket connections and broadcasts notifications.
 type NotificationServer struct {
-	secret  string
-	clients map[*websocket.Conn]bool
-	mu      sync.RWMutex
+	secret       string
+	clients      map[*websocket.Conn]*ClientInfo
+	pending      map[string]Notification // ServerID -> Notification for exclusive notifications
+	mu           sync.RWMutex
+	pendingMu    sync.RWMutex
 }
 
 // NewNotificationServer creates a new server with the given authentication secret.
 func NewNotificationServer(secret string) *NotificationServer {
 	return &NotificationServer{
 		secret:  secret,
-		clients: make(map[*websocket.Conn]bool),
+		clients: make(map[*websocket.Conn]*ClientInfo),
+		pending: make(map[string]Notification),
 	}
 }
 
@@ -57,33 +66,123 @@ func (s *NotificationServer) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	clientName := r.Header.Get("X-Client-Name")
+	clientInfo := &ClientInfo{Name: clientName}
+
 	s.mu.Lock()
-	s.clients[conn] = true
+	s.clients[conn] = clientInfo
 	s.mu.Unlock()
 
-	log.Printf("Client connected (%d total)", s.ClientCount())
+	if clientName != "" {
+		log.Printf("Client '%s' connected (%d total)", clientName, s.ClientCount())
+	} else {
+		log.Printf("Client connected (%d total)", s.ClientCount())
+	}
 
 	// Handle client connection lifecycle
 	go s.handleClient(conn)
 }
 
-// handleClient reads from the client connection to detect disconnection.
+// handleClient reads messages from the client and handles disconnection.
 func (s *NotificationServer) handleClient(conn *websocket.Conn) {
 	defer func() {
 		s.mu.Lock()
+		clientInfo := s.clients[conn]
 		delete(s.clients, conn)
 		s.mu.Unlock()
 		conn.Close()
-		log.Printf("Client disconnected (%d remaining)", s.ClientCount())
+		if clientInfo != nil && clientInfo.Name != "" {
+			log.Printf("Client '%s' disconnected (%d remaining)", clientInfo.Name, s.ClientCount())
+		} else {
+			log.Printf("Client disconnected (%d remaining)", s.ClientCount())
+		}
 	}()
 
-	// Read loop to detect disconnection
+	// Get client info for this connection
+	s.mu.RLock()
+	clientInfo := s.clients[conn]
+	s.mu.RUnlock()
+
+	clientName := ""
+	if clientInfo != nil {
+		clientName = clientInfo.Name
+	}
+
+	// Read loop for messages
 	for {
-		_, _, err := conn.ReadMessage()
+		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
+
+		msg, err := DecodeMessage(raw)
+		if err != nil {
+			log.Printf("Failed to decode message: %v", err)
+			continue
+		}
+
+		switch msg.Type {
+		case MessageTypeAction:
+			var actionMsg ActionMessage
+			if err := json.Unmarshal(msg.Data, &actionMsg); err != nil {
+				log.Printf("Failed to decode action message: %v", err)
+				continue
+			}
+			s.handleActionMessage(clientName, actionMsg)
+		}
 	}
+}
+
+// handleActionMessage processes an action request from a client.
+func (s *NotificationServer) handleActionMessage(clientName string, msg ActionMessage) {
+	s.pendingMu.Lock()
+	notif, exists := s.pending[msg.NotificationID]
+	if exists {
+		delete(s.pending, msg.NotificationID)
+	}
+	s.pendingMu.Unlock()
+
+	if !exists {
+		log.Printf("Action for unknown notification %s", msg.NotificationID)
+		return
+	}
+
+	if msg.ActionIndex < 0 || msg.ActionIndex >= len(notif.Actions) {
+		log.Printf("Invalid action index %d for notification %s", msg.ActionIndex, msg.NotificationID)
+		return
+	}
+
+	action := notif.Actions[msg.ActionIndex]
+	displayName := clientName
+	if displayName == "" {
+		displayName = "anonymous"
+	}
+
+	log.Printf("Client '%s' executing action '%s' on notification %s", displayName, action.Label, msg.NotificationID)
+
+	// Execute the action
+	var execErr error
+	if action.Open {
+		// For open actions, we can't open a browser on the server
+		// Just mark as success - client should handle opening URLs locally
+		log.Printf("Open action requested - client should handle locally")
+	} else {
+		execErr = ExecuteAction(action)
+	}
+
+	// Broadcast resolved message
+	resolved := ResolvedMessage{
+		NotificationID: msg.NotificationID,
+		ResolvedBy:     clientName,
+		ActionLabel:    action.Label,
+		Success:        execErr == nil,
+	}
+	if execErr != nil {
+		resolved.Error = execErr.Error()
+		log.Printf("Action failed: %v", execErr)
+	}
+
+	s.BroadcastResolved(resolved)
 }
 
 // HandleNotify handles HTTP POST requests to send notifications.
@@ -120,15 +219,28 @@ func (s *NotificationServer) HandleNotify(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// Assign server ID for exclusive notifications
+	if n.Exclusive && n.ServerID == "" {
+		n.ServerID = uuid.New().String()
+	}
+
+	// Store exclusive notifications for later action handling
+	if n.Exclusive {
+		s.pendingMu.Lock()
+		s.pending[n.ServerID] = n
+		s.pendingMu.Unlock()
+		log.Printf("Stored exclusive notification %s", n.ServerID)
+	}
+
 	s.Broadcast(n)
 	w.WriteHeader(http.StatusAccepted)
 }
 
 // Broadcast sends a notification to all connected clients.
 func (s *NotificationServer) Broadcast(n Notification) {
-	data, err := json.Marshal(n)
+	data, err := EncodeMessage(MessageTypeNotification, n)
 	if err != nil {
-		log.Printf("Failed to marshal notification: %v", err)
+		log.Printf("Failed to encode notification message: %v", err)
 		return
 	}
 
@@ -143,6 +255,28 @@ func (s *NotificationServer) Broadcast(n Notification) {
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 			log.Printf("Failed to send to client: %v", err)
 			// Connection will be cleaned up by read loop
+		}
+	}
+}
+
+// BroadcastResolved sends a resolved message to all connected clients.
+func (s *NotificationServer) BroadcastResolved(resolved ResolvedMessage) {
+	data, err := EncodeMessage(MessageTypeResolved, resolved)
+	if err != nil {
+		log.Printf("Failed to encode resolved message: %v", err)
+		return
+	}
+
+	s.mu.RLock()
+	clients := make([]*websocket.Conn, 0, len(s.clients))
+	for conn := range s.clients {
+		clients = append(clients, conn)
+	}
+	s.mu.RUnlock()
+
+	for _, conn := range clients {
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Printf("Failed to send resolved to client: %v", err)
 		}
 	}
 }

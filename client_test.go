@@ -22,7 +22,7 @@ func TestClientConnectsToServer(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
 
 	received := make(chan Notification, 1)
-	client := NewNotificationClient(wsURL, secret, func(n Notification) {
+	client := NewNotificationClient(wsURL, secret, "", func(n Notification) {
 		received <- n
 	})
 
@@ -49,7 +49,7 @@ func TestClientReceivesNotifications(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
 
 	received := make(chan Notification, 1)
-	client := NewNotificationClient(wsURL, secret, func(n Notification) {
+	client := NewNotificationClient(wsURL, secret, "", func(n Notification) {
 		received <- n
 	})
 
@@ -87,7 +87,7 @@ func TestClientReconnects(t *testing.T) {
 	var mu sync.Mutex
 	connectionEvents := []string{}
 
-	client := NewNotificationClient(wsURL, secret, func(n Notification) {})
+	client := NewNotificationClient(wsURL, secret, "", func(n Notification) {})
 	client.OnConnect = func() {
 		mu.Lock()
 		connectionEvents = append(connectionEvents, "connected")
@@ -134,7 +134,7 @@ func TestClientAuthFailure(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
 
-	client := NewNotificationClient(wsURL, "wrong-secret", func(n Notification) {})
+	client := NewNotificationClient(wsURL, "wrong-secret", "", func(n Notification) {})
 
 	err := client.Connect()
 	if err == nil {
@@ -152,7 +152,7 @@ func TestClientIsConnected(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
 
-	client := NewNotificationClient(wsURL, secret, func(n Notification) {})
+	client := NewNotificationClient(wsURL, secret, "", func(n Notification) {})
 
 	if client.IsConnected() {
 		t.Error("expected not connected before Connect()")

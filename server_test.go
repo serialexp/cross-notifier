@@ -116,15 +116,26 @@ func TestServerBroadcastsNotifications(t *testing.T) {
 	// Both clients should receive it
 	for i, conn := range []*websocket.Conn{conn1, conn2} {
 		conn.SetReadDeadline(time.Now().Add(time.Second))
-		_, msg, err := conn.ReadMessage()
+		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			t.Errorf("client %d failed to read: %v", i+1, err)
 			continue
 		}
 
+		msg, err := DecodeMessage(raw)
+		if err != nil {
+			t.Errorf("client %d failed to decode message: %v", i+1, err)
+			continue
+		}
+
+		if msg.Type != MessageTypeNotification {
+			t.Errorf("client %d got wrong message type: %s", i+1, msg.Type)
+			continue
+		}
+
 		var received Notification
-		if err := json.Unmarshal(msg, &received); err != nil {
-			t.Errorf("client %d failed to unmarshal: %v", i+1, err)
+		if err := json.Unmarshal(msg.Data, &received); err != nil {
+			t.Errorf("client %d failed to unmarshal notification: %v", i+1, err)
 			continue
 		}
 
@@ -177,14 +188,23 @@ func TestServerHTTPNotifyEndpoint(t *testing.T) {
 
 	// Client should receive the notification
 	conn.SetReadDeadline(time.Now().Add(time.Second))
-	_, msg, err := conn.ReadMessage()
+	_, raw, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("failed to read notification: %v", err)
 	}
 
+	msg, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatalf("failed to decode message: %v", err)
+	}
+
+	if msg.Type != MessageTypeNotification {
+		t.Fatalf("wrong message type: %s", msg.Type)
+	}
+
 	var received Notification
-	if err := json.Unmarshal(msg, &received); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
+	if err := json.Unmarshal(msg.Data, &received); err != nil {
+		t.Fatalf("failed to unmarshal notification: %v", err)
 	}
 
 	if received.Title != "HTTP Test" {
