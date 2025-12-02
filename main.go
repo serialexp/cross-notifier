@@ -134,7 +134,11 @@ func addNotification(n Notification) {
 	}
 
 	notifications = append(notifications, n)
-	g.Update()
+
+	// Only update GUI if window is initialized
+	if wnd != nil {
+		g.Update()
+	}
 }
 
 func dismissNotification(id int64) {
@@ -145,7 +149,9 @@ func dismissNotification(id int64) {
 		if n.ID == id {
 			notifications = append(notifications[:i], notifications[i+1:]...)
 			cleanupTexture(id)
-			g.Update()
+			if wnd != nil {
+				g.Update()
+			}
 			return
 		}
 	}
@@ -256,7 +262,7 @@ func pruneExpired() {
 	}
 	notifications = filtered
 
-	if changed {
+	if changed && wnd != nil {
 		g.Update()
 	}
 }
@@ -513,7 +519,9 @@ func renderActionButton(n Notification, actionIdx int, action Action, state *Act
 					// Fall back to local execution
 					SetActionState(notifID, actionIdx, ActionIdle, nil)
 				}
-				g.Update()
+				if wnd != nil {
+					g.Update()
+				}
 			}()
 		} else {
 			// Execute action locally
@@ -533,7 +541,9 @@ func renderActionButton(n Notification, actionIdx int, action Action, state *Act
 				},
 			)
 		}
-		g.Update()
+		if wnd != nil {
+			g.Update()
+		}
 	}
 
 	imgui.PopStyleVar()
@@ -557,7 +567,9 @@ func triggerSuccessAnimation(notifID int64) {
 			textureMu.Lock()
 			successAnimations[notifID] = progress
 			textureMu.Unlock()
-			g.Update()
+			if wnd != nil {
+				g.Update()
+			}
 			time.Sleep(16 * time.Millisecond) // ~60fps
 		}
 		dismissNotification(notifID)
@@ -696,7 +708,9 @@ func connectToServer(server Server, clientName string) {
 	})
 	client.SetOnResolved(func(resolved ResolvedMessage) {
 		handleResolvedMessage(resolved)
-		g.Update()
+		if wnd != nil {
+			g.Update()
+		}
 	})
 
 	serverLabel := server.Label
