@@ -28,8 +28,8 @@ const (
 	defaultPort      = "9876"
 	maxVisible       = 4
 	notificationW    = 320
-	notificationH    = 80  // base height without actions
-	actionRowH       = 28  // height of action button row
+	notificationH    = 80 // base height without actions
+	actionRowH       = 28 // height of action button row
 	iconSize         = 48
 	padding          = 10
 	stackPeek        = 20 // pixels visible for stacked notifications
@@ -64,8 +64,8 @@ var (
 )
 
 type Notification struct {
-	ID        int64     `json:"-"`                   // local ID for GUI tracking
-	ServerID  string    `json:"id,omitempty"`        // server-assigned ID for coordination
+	ID        int64     `json:"-"`            // local ID for GUI tracking
+	ServerID  string    `json:"id,omitempty"` // server-assigned ID for coordination
 	Title     string    `json:"title"`
 	Message   string    `json:"message"`
 	IconData  string    `json:"iconData,omitempty"`  // base64 encoded image
@@ -101,7 +101,6 @@ var (
 
 	// Map server IDs to local IDs for exclusive notifications
 	serverIDToLocalID = make(map[string]int64)
-
 )
 
 func addNotification(n Notification) {
@@ -450,8 +449,8 @@ func renderStackedNotification(n Notification, index int, total int) {
 		}
 	}
 	imgui.EndChild()
-	imgui.PopStyleVar() // ChildBorderSize
-	imgui.PopStyleVar() // ChildRounding
+	imgui.PopStyleVar()   // ChildBorderSize
+	imgui.PopStyleVar()   // ChildRounding
 	imgui.PopStyleColor() // Border
 	imgui.PopStyleColor() // ChildBg
 }

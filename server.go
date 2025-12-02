@@ -27,11 +27,11 @@ type ClientInfo struct {
 
 // NotificationServer manages WebSocket connections and broadcasts notifications.
 type NotificationServer struct {
-	secret       string
-	clients      map[*websocket.Conn]*ClientInfo
-	pending      map[string]Notification // ServerID -> Notification for exclusive notifications
-	mu           sync.RWMutex
-	pendingMu    sync.RWMutex
+	secret    string
+	clients   map[*websocket.Conn]*ClientInfo
+	pending   map[string]Notification // ServerID -> Notification for exclusive notifications
+	mu        sync.RWMutex
+	pendingMu sync.RWMutex
 }
 
 // NewNotificationServer creates a new server with the given authentication secret.

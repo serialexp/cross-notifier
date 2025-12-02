@@ -1,0 +1,275 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: false
+        default: 'v0.0.0-dev'
+
+env:
+  GO_VERSION: '1.25.4'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libxxf86vm-dev
+
+      - name: Build
+        run: |
+          go build -o cross-notifier .
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Package
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          mkdir -p dist
+          tar -czvf dist/cross-notifier-${VERSION}-linux-amd64.tar.gz \
+            cross-notifier \
+            README.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: dist/*.tar.gz
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build
+        env:
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 1
+        run: |
+          go build -o cross-notifier .
+
+      - name: Create app bundle
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          APP_NAME="CrossNotifier"
+          APP_DIR="${APP_NAME}.app"
+
+          mkdir -p "${APP_DIR}/Contents/MacOS"
+          mkdir -p "${APP_DIR}/Contents/Resources"
+
+          cp cross-notifier "${APP_DIR}/Contents/MacOS/"
+
+          if [ -f "Icon.icns" ]; then
+            cp Icon.icns "${APP_DIR}/Contents/Resources/"
+          fi
+
+          cat > "${APP_DIR}/Contents/Info.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>cross-notifier</string>
+              <key>CFBundleIconFile</key>
+              <string>Icon</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.crossnotifier.app</string>
+              <key>CFBundleName</key>
+              <string>${APP_NAME}</string>
+              <key>CFBundleDisplayName</key>
+              <string>${APP_NAME}</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION#v}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION#v}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleSignature</key>
+              <string>????</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>10.15</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>LSUIElement</key>
+              <false/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Create DMG
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          ARCH=${{ matrix.arch }}
+          APP_NAME="CrossNotifier"
+          DMG_NAME="CrossNotifier-${VERSION}-macos-${ARCH}.dmg"
+
+          mkdir -p dmg-temp
+          cp -R "${APP_NAME}.app" dmg-temp/
+          ln -s /Applications dmg-temp/Applications
+
+          mkdir -p dist
+          hdiutil create -volname "${APP_NAME}" -srcfolder dmg-temp -ov -format UDZO "dist/${DMG_NAME}"
+          rm -rf dmg-temp
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          go build -ldflags="-H windowsgui" -o cross-notifier.exe .
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          mkdir -p dist
+          7z a -tzip "dist/cross-notifier-${VERSION}-windows-amd64.zip" \
+            cross-notifier.exe \
+            README.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64
+          path: dist/*.zip
+
+  build-server:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+          - arch: arm64
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build server
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -o server ./cmd/server
+
+      - name: Package
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          mkdir -p dist
+          tar -czvf dist/cross-notifier-server-${VERSION}-linux-${{ matrix.arch }}.tar.gz \
+            server \
+            README.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+  release:
+    needs: [build-linux, build-macos, build-windows, build-server]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/linux-amd64/*
+            artifacts/macos-amd64/*
+            artifacts/macos-arm64/*
+            artifacts/windows-amd64/*
+            artifacts/server-linux-amd64/*
+            artifacts/server-linux-arm64/*
+          generate_release_notes: true

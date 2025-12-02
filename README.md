@@ -17,21 +17,72 @@ A cross-platform notification daemon that displays desktop notifications via HTT
 
 ## Installation
 
-### macOS
-
-Build the app bundle and DMG:
+### Quick Install (Linux/macOS)
 
 ```bash
-./build-macos.sh --dmg
+curl -fsSL https://raw.githubusercontent.com/serialexp/cross-notifier/main/install.sh | bash
 ```
 
-Then open `CrossNotifier-1.0.0.dmg` and drag to Applications.
+This will automatically download and install the latest release for your platform.
 
-### From source
+**On Linux**, the installer will:
+- Install the binary to `/usr/local/bin` or `~/.local/bin`
+- Create a desktop entry for easy launching from your application menu
+- Optionally set up a systemd user service to auto-start on login
+
+### Manual Installation
+
+#### macOS
+
+Download the DMG for your architecture from the [latest release](https://github.com/serialexp/cross-notifier/releases/latest):
+- **Apple Silicon (M1/M2/M3)**: `CrossNotifier-vX.X.X-macos-arm64.dmg`
+- **Intel**: `CrossNotifier-vX.X.X-macos-amd64.dmg`
+
+Open the DMG and drag CrossNotifier to Applications.
+
+#### Linux
+
+Download the tar.gz for your architecture from the [latest release](https://github.com/serialexp/cross-notifier/releases/latest):
+
+```bash
+# For x86_64
+curl -LO https://github.com/serialexp/cross-notifier/releases/latest/download/cross-notifier-vX.X.X-linux-amd64.tar.gz
+tar -xzf cross-notifier-vX.X.X-linux-amd64.tar.gz
+sudo mv cross-notifier /usr/local/bin/
+```
+
+#### Windows
+
+Download `cross-notifier-vX.X.X-windows-amd64.zip` from the [latest release](https://github.com/serialexp/cross-notifier/releases/latest) and extract it.
+
+### From Source
 
 ```bash
 go build -o cross-notifier .
 ./cross-notifier
+```
+
+### Server-Only Binary
+
+For running a headless server without GUI dependencies, download the server binary from the [latest release](https://github.com/serialexp/cross-notifier/releases/latest):
+
+```bash
+# For x86_64
+curl -LO https://github.com/serialexp/cross-notifier/releases/latest/download/cross-notifier-server-vX.X.X-linux-amd64.tar.gz
+tar -xzf cross-notifier-server-vX.X.X-linux-amd64.tar.gz
+./server -server -secret mysecret -port 9876
+
+# For ARM64 (Raspberry Pi, etc.)
+curl -LO https://github.com/serialexp/cross-notifier/releases/latest/download/cross-notifier-server-vX.X.X-linux-arm64.tar.gz
+tar -xzf cross-notifier-server-vX.X.X-linux-arm64.tar.gz
+./server -server -secret mysecret -port 9876
+```
+
+Or build from source:
+
+```bash
+just server
+./server -server -secret mysecret -port 9876
 ```
 
 ### Docker (Server Only)
