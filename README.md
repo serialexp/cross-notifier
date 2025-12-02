@@ -19,8 +19,14 @@ A cross-platform notification daemon that displays desktop notifications via HTT
 
 ### Quick Install (Linux/macOS)
 
+**Standard install:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/serialexp/cross-notifier/main/install.sh | bash
+```
+
+**Install with auto-start on login (Linux only):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/serialexp/cross-notifier/main/install.sh | bash -s -- --enable-service
 ```
 
 This will automatically download and install the latest release for your platform.
@@ -28,7 +34,8 @@ This will automatically download and install the latest release for your platfor
 **On Linux**, the installer will:
 - Install the binary to `/usr/local/bin` or `~/.local/bin`
 - Create a desktop entry for easy launching from your application menu
-- Optionally set up a systemd user service to auto-start on login
+- Create a systemd user service file
+- Optionally enable auto-start on login (with `--enable-service` flag or interactive prompt)
 
 ### Manual Installation
 

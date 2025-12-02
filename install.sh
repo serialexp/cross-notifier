@@ -1,12 +1,24 @@
 #!/bin/bash
 # ABOUTME: Universal installer script for CrossNotifier
 # ABOUTME: Downloads and installs the appropriate release for the current platform
+# ABOUTME: Usage: ./install.sh [--enable-service]
 
 set -euo pipefail
 
 REPO="serialexp/cross-notifier"
 APP_NAME="cross-notifier"
 DISPLAY_NAME="CrossNotifier"
+
+# Parse command line arguments
+ENABLE_SERVICE=false
+for arg in "$@"; do
+    case $arg in
+        --enable-service)
+            ENABLE_SERVICE=true
+            shift
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -113,12 +125,38 @@ EOF
         update-desktop-database "$desktop_dir" 2>/dev/null || true
     fi
 
-    # Ask about systemd user service
-    echo ""
-    read -p "Would you like to enable ${DISPLAY_NAME} to start automatically on login? (y/N) " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        setup_systemd_service "$bin_dir"
+    # Create systemd service file (always, so users can enable it later)
+    local service_dir="${HOME}/.config/systemd/user"
+    mkdir -p "$service_dir"
+
+    info "Creating systemd user service file..."
+    cat > "${service_dir}/${APP_NAME}.service" << EOF
+[Unit]
+Description=CrossNotifier - Desktop notification daemon
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=${bin_dir}/${APP_NAME}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+    # Handle systemd service activation
+    if [[ "$ENABLE_SERVICE" == "true" ]]; then
+        echo ""
+        enable_systemd_service
+    elif [[ -t 0 ]]; then
+        # Running interactively (not piped from curl)
+        echo ""
+        read -p "Would you like to enable ${DISPLAY_NAME} to start automatically on login? (y/N) " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            enable_systemd_service
+        fi
     fi
 
     rm -rf "$tmp_dir"
@@ -136,6 +174,15 @@ EOF
     echo "  You can now launch ${DISPLAY_NAME} from your application menu!"
     echo ""
 
+    # If service not enabled, show instructions
+    if [[ "$ENABLE_SERVICE" != "true" ]] && ! systemctl --user is-enabled ${APP_NAME}.service &>/dev/null; then
+        echo "  To enable auto-start on login, run:"
+        echo "    systemctl --user enable --now ${APP_NAME}.service"
+        echo ""
+        echo "  Or reinstall with: curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s -- --enable-service"
+        echo ""
+    fi
+
     # Check if bin_dir is in PATH
     if [[ ":$PATH:" != *":${bin_dir}:"* ]]; then
         warn "${bin_dir} is not in your PATH"
@@ -143,28 +190,8 @@ EOF
     fi
 }
 
-# Setup systemd user service
-setup_systemd_service() {
-    local bin_dir="$1"
-    local service_dir="${HOME}/.config/systemd/user"
-    mkdir -p "$service_dir"
-
-    info "Creating systemd user service..."
-    cat > "${service_dir}/${APP_NAME}.service" << EOF
-[Unit]
-Description=CrossNotifier - Desktop notification daemon
-After=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart=${bin_dir}/${APP_NAME}
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-
+# Enable systemd user service
+enable_systemd_service() {
     # Reload systemd and enable service
     info "Enabling systemd service..."
     systemctl --user daemon-reload
