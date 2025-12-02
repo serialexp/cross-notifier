@@ -20,7 +20,7 @@ import (
 	"github.com/AllenDang/cimgui-go/imgui"
 	g "github.com/AllenDang/giu"
 	"github.com/fsnotify/fsnotify"
-	"github.com/kbinani/screenshot"
+	"github.com/go-gl/glfw/v3.3/glfw"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -607,13 +607,20 @@ func updateWindowSize() {
 }
 
 func positionWindow() {
-	// Get primary display bounds
-	bounds := screenshot.GetDisplayBounds(0)
-
-	// Position in top-right corner with some margin
+	// Get actual screen dimensions from GLFW
 	margin := 20
-	x := bounds.Max.X - notificationW - margin
-	y := bounds.Min.Y + margin
+	screenWidth := 1920 // fallback
+
+	// Try to get primary monitor dimensions
+	if monitor := glfw.GetPrimaryMonitor(); monitor != nil {
+		if mode := monitor.GetVideoMode(); mode != nil {
+			screenWidth = mode.Width
+		}
+	}
+
+	// Position in top-right corner
+	x := screenWidth - notificationW - margin
+	y := margin
 
 	wnd.SetPos(x, y)
 }
