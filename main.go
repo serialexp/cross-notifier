@@ -68,6 +68,7 @@ type Notification struct {
 	ServerID  string    `json:"id,omitempty"` // server-assigned ID for coordination
 	Title     string    `json:"title"`
 	Message   string    `json:"message"`
+	Status    string    `json:"status,omitempty"`    // info, success, warning, error
 	IconData  string    `json:"iconData,omitempty"`  // base64 encoded image
 	IconHref  string    `json:"iconHref,omitempty"`  // URL to fetch image from
 	IconPath  string    `json:"iconPath,omitempty"`  // local file path
@@ -366,6 +367,20 @@ func loop() {
 	imgui.PopStyleVar()
 }
 
+// statusBorderColor returns the border color for a notification based on its status.
+func statusBorderColor(status string) imgui.Vec4 {
+	switch status {
+	case "success":
+		return imgui.Vec4{X: 0.2, Y: 0.7, Z: 0.3, W: 0.9}
+	case "warning":
+		return imgui.Vec4{X: 0.9, Y: 0.6, Z: 0.2, W: 0.9}
+	case "error":
+		return imgui.Vec4{X: 0.8, Y: 0.2, Z: 0.2, W: 0.9}
+	default: // info or empty
+		return imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 0.8}
+	}
+}
+
 // notificationHeight calculates the height needed for a notification.
 func notificationHeight(n Notification) float32 {
 	height := float32(notificationH)
@@ -406,7 +421,7 @@ func renderStackedNotification(n Notification, index int, total int) {
 	}
 
 	imgui.PushStyleColorVec4(imgui.ColChildBg, cardBg)
-	imgui.PushStyleColorVec4(imgui.ColBorder, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 0.8})
+	imgui.PushStyleColorVec4(imgui.ColBorder, statusBorderColor(n.Status))
 	imgui.PushStyleVarFloat(imgui.StyleVarChildRounding, 6)
 	imgui.PushStyleVarFloat(imgui.StyleVarChildBorderSize, 1)
 

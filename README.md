@@ -187,6 +187,7 @@ Authorization: Bearer <shared-secret>
 |-------|------|----------|---------|-------------|
 | `title` | string | No* | - | Notification title |
 | `message` | string | No* | - | Notification body text |
+| `status` | string | No | - | Visual style: `info`, `success`, `warning`, `error` |
 | `iconPath` | string | No | - | Local file path to icon (PNG, JPG) |
 | `iconHref` | string | No | - | URL to fetch icon from (server fetches and resizes) |
 | `iconData` | string | No | - | Base64-encoded icon image |
