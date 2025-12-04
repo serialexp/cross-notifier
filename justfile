@@ -5,7 +5,8 @@ default:
 # Set up development environment
 setup:
     git config core.hooksPath .githooks
-    @echo "Git hooks configured!"
+    go install github.com/golangci/golangci-lint/cmd/golangci-lint
+    @echo "Development environment configured!"
 
 # Build the desktop daemon
 build:
