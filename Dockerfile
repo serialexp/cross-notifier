@@ -16,12 +16,15 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server
 
 # Runtime image
-FROM alpine:3.19
+FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates && \
+    adduser -D -u 1000 notifier
 
 WORKDIR /app
 COPY --from=builder /build/server .
+
+USER notifier
 
 EXPOSE 9876
 
