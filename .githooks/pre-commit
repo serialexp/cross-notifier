@@ -1,0 +1,28 @@
+#!/bin/sh
+# ABOUTME: Pre-commit hook that runs linting checks before each commit.
+# ABOUTME: Runs gofmt, go vet, and golangci-lint to match CI.
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check if just is available
+if command -v just >/dev/null 2>&1; then
+    just lint
+else
+    # Fall back to running commands directly
+    echo "Checking formatting..."
+    if [ -n "$(gofmt -s -l . | grep -v '^vendor/')" ]; then
+        echo "Go code is not formatted:"
+        gofmt -s -d .
+        exit 1
+    fi
+
+    echo "Running go vet..."
+    go vet ./...
+
+    echo "Running golangci-lint..."
+    golangci-lint run --timeout=5m
+fi
+
+echo "Pre-commit checks passed!"

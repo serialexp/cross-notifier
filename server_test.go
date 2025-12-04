@@ -115,7 +115,7 @@ func TestServerBroadcastsNotifications(t *testing.T) {
 
 	// Both clients should receive it
 	for i, conn := range []*websocket.Conn{conn1, conn2} {
-		conn.SetReadDeadline(time.Now().Add(time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			t.Errorf("client %d failed to read: %v", i+1, err)
@@ -187,7 +187,7 @@ func TestServerHTTPNotifyEndpoint(t *testing.T) {
 	}
 
 	// Client should receive the notification
-	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	_, raw, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("failed to read notification: %v", err)

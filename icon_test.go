@@ -26,8 +26,8 @@ func createTestPNG() []byte {
 
 	f, _ := os.CreateTemp("", "test*.png")
 	defer f.Close()
-	png.Encode(f, img)
-	f.Seek(0, 0)
+	_ = png.Encode(f, img)
+	_, _ = f.Seek(0, 0)
 	data, _ := os.ReadFile(f.Name())
 	os.Remove(f.Name())
 	return data
@@ -75,7 +75,7 @@ func TestLoadIconFromURL(t *testing.T) {
 	// Start test server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
-		w.Write(pngData)
+		_, _ = w.Write(pngData)
 	}))
 	defer ts.Close()
 
@@ -144,7 +144,7 @@ func TestResolveIcon_Priority(t *testing.T) {
 	// Start test server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
-		w.Write(pngData)
+		_, _ = w.Write(pngData)
 	}))
 	defer ts.Close()
 

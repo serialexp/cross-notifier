@@ -2,6 +2,11 @@
 default:
     @just --list
 
+# Set up development environment
+setup:
+    git config core.hooksPath .githooks
+    @echo "Git hooks configured!"
+
 # Build the desktop daemon
 build:
     go build -o cross-notifier .
@@ -9,6 +14,19 @@ build:
 # Run tests
 test:
     go test ./...
+
+# Run linters (same as CI)
+lint:
+    @echo "Checking formatting..."
+    @gofmt -s -l . | grep -v '^vendor/' | (! grep .) || (echo "Run 'just fmt' to fix" && exit 1)
+    @echo "Running go vet..."
+    go vet ./...
+    @echo "Running golangci-lint..."
+    golangci-lint run --timeout=5m
+
+# Format code
+fmt:
+    gofmt -s -w .
 
 # Build server-only binary (no GUI dependencies)
 server:

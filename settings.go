@@ -69,15 +69,6 @@ func ShowSettingsWindow(initial *Config, isConnected func(url string) bool) Sett
 	wnd.SetBgColor(color.RGBA{R: 30, G: 30, B: 35, A: 255})
 
 	wnd.Run(func() {
-		// Recalculate and resize window if server count changes
-		newHeight := baseHeight + len(state.servers)*serverRowHeight
-		if newHeight < 250 {
-			newHeight = 250
-		}
-		if newHeight > 500 {
-			newHeight = 500
-		}
-
 		g.SingleWindow().Layout(
 			g.Label("Configure notification client:"),
 			g.Spacing(),
@@ -147,10 +138,10 @@ func renderServerRow(state *settingsState, index int, toDelete *int) {
 	idx := index // capture for closure
 
 	// Show connection status indicator
-	statusIndicator := "○" // empty circle for disconnected
+	statusIndicator := "○"                                // empty circle for disconnected
 	statusColor := color.RGBA{R: 255, G: 0, B: 0, A: 255} // red
 	if server.connected {
-		statusIndicator = "●" // filled circle for connected
+		statusIndicator = "●"                                // filled circle for connected
 		statusColor = color.RGBA{R: 0, G: 255, B: 0, A: 255} // green
 	}
 
