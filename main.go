@@ -236,12 +236,37 @@ func loadPendingIcons() {
 
 func scaleImage(src image.Image, width, height int) image.Image {
 	srcBounds := src.Bounds()
-	if srcBounds.Dx() <= width && srcBounds.Dy() <= height {
-		return src // no scaling needed
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+
+	// Calculate scale factor to fit within bounds while preserving aspect ratio
+	scaleX := float64(width) / float64(srcW)
+	scaleY := float64(height) / float64(srcH)
+	scale := scaleX
+	if scaleY < scaleX {
+		scale = scaleY
 	}
 
+	// Don't upscale
+	if scale >= 1.0 {
+		// Center the original image in the target area
+		dst := image.NewRGBA(image.Rect(0, 0, width, height))
+		offsetX := (width - srcW) / 2
+		offsetY := (height - srcH) / 2
+		xdraw.Copy(dst, image.Point{X: offsetX, Y: offsetY}, src, srcBounds, xdraw.Over, nil)
+		return dst
+	}
+
+	// Calculate scaled dimensions
+	scaledW := int(float64(srcW) * scale)
+	scaledH := int(float64(srcH) * scale)
+
+	// Create destination with target size, scale image centered
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, srcBounds, xdraw.Over, nil)
+	offsetX := (width - scaledW) / 2
+	offsetY := (height - scaledH) / 2
+	dstRect := image.Rect(offsetX, offsetY, offsetX+scaledW, offsetY+scaledH)
+	xdraw.CatmullRom.Scale(dst, dstRect, src, srcBounds, xdraw.Over, nil)
 	return dst
 }
 
@@ -477,16 +502,12 @@ func renderStackedNotification(n Notification, index int, total int) {
 			iconOffset := float32(contentHeight-iconSize) / 2
 			imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: iconOffset})
 			imgui.Image(tex.ID(), imgui.Vec2{X: iconSize, Y: iconSize})
-			imgui.SameLineV(0, innerPadding)
-			textStartX = imgui.CursorPosX()
-			imgui.SetCursorPosY(innerPadding)
-		} else {
-			imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: innerPadding})
+			textStartX = innerPadding + iconSize + innerPadding
 		}
 
-		// Title
+		// Title - position explicitly to avoid cursor issues from icon
+		imgui.SetCursorPos(imgui.Vec2{X: textStartX, Y: innerPadding})
 		if n.Title != "" {
-			imgui.SetCursorPosX(textStartX)
 			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.titleText)
 			imgui.TextWrapped(n.Title)
 			imgui.PopStyleColor()

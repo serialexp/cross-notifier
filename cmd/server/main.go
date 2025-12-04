@@ -197,12 +197,38 @@ func fetchAndEncodeIcon(url string) (string, error) {
 }
 
 func scaleImage(src image.Image, width, height int) image.Image {
-	bounds := src.Bounds()
-	if bounds.Dx() <= width && bounds.Dy() <= height {
-		return src
+	srcBounds := src.Bounds()
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+
+	// Calculate scale factor to fit within bounds while preserving aspect ratio
+	scaleX := float64(width) / float64(srcW)
+	scaleY := float64(height) / float64(srcH)
+	scale := scaleX
+	if scaleY < scaleX {
+		scale = scaleY
 	}
+
+	// Don't upscale
+	if scale >= 1.0 {
+		// Center the original image in the target area
+		dst := image.NewRGBA(image.Rect(0, 0, width, height))
+		offsetX := (width - srcW) / 2
+		offsetY := (height - srcH) / 2
+		xdraw.Copy(dst, image.Point{X: offsetX, Y: offsetY}, src, srcBounds, xdraw.Over, nil)
+		return dst
+	}
+
+	// Calculate scaled dimensions
+	scaledW := int(float64(srcW) * scale)
+	scaledH := int(float64(srcH) * scale)
+
+	// Create destination with target size, scale image centered
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, xdraw.Over, nil)
+	offsetX := (width - scaledW) / 2
+	offsetY := (height - scaledH) / 2
+	dstRect := image.Rect(offsetX, offsetY, offsetX+scaledW, offsetY+scaledH)
+	xdraw.CatmullRom.Scale(dst, dstRect, src, srcBounds, xdraw.Over, nil)
 	return dst
 }
 
