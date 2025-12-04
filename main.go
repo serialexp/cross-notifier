@@ -268,20 +268,52 @@ func pruneExpired() {
 	}
 }
 
+// apiError writes a JSON error response with usage information.
+func apiError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": message,
+		"usage": map[string]any{
+			"method": "POST",
+			"headers": map[string]string{
+				"Content-Type": "application/json",
+			},
+			"body": map[string]any{
+				"title":     "(string) notification title",
+				"message":   "(string) notification body",
+				"status":    "(string, optional) info|success|warning|error",
+				"iconPath":  "(string, optional) local file path to icon",
+				"iconHref":  "(string, optional) URL to fetch icon from",
+				"iconData":  "(string, optional) base64-encoded icon",
+				"duration":  "(int, optional) seconds before auto-dismiss, 0=persistent",
+				"actions":   "(array, optional) action buttons",
+				"exclusive": "(bool, optional) coordinate actions across clients",
+			},
+			"example": map[string]any{
+				"title":    "Hello",
+				"message":  "World",
+				"status":   "success",
+				"duration": 5,
+			},
+		},
+	})
+}
+
 func httpHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		apiError(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
 
 	var n Notification
 	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		apiError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 
 	if n.Title == "" && n.Message == "" {
-		http.Error(w, "title or message required", http.StatusBadRequest)
+		apiError(w, http.StatusBadRequest, "title or message required")
 		return
 	}
 

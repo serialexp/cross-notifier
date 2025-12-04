@@ -189,7 +189,7 @@ func (s *NotificationServer) handleActionMessage(clientName string, msg ActionMe
 func (s *NotificationServer) HandleNotify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		log.Printf("HandleNotify: rejected non-POST request")
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		apiError(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
 
@@ -202,13 +202,13 @@ func (s *NotificationServer) HandleNotify(w http.ResponseWriter, r *http.Request
 	var n Notification
 	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
 		log.Printf("HandleNotify: failed to decode JSON: %v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		apiError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 
 	if n.Title == "" && n.Message == "" {
 		log.Printf("HandleNotify: rejected notification with empty title and message")
-		http.Error(w, "title or message required", http.StatusBadRequest)
+		apiError(w, http.StatusBadRequest, "title or message required")
 		return
 	}
 
