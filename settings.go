@@ -4,12 +4,16 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"image/color"
 
 	g "github.com/AllenDang/giu"
 	"github.com/sqweek/dialog"
 )
+
+//go:embed Hack-Regular.ttf
+var hackFont []byte
 
 // SettingsResult holds the outcome of the settings window.
 type SettingsResult struct {
@@ -92,6 +96,9 @@ func ShowSettingsWindow(initial *Config, isConnected func(url string) bool) Sett
 
 	wnd := g.NewMasterWindow("Cross-Notifier Settings", 700, windowHeight, 0)
 	wnd.SetBgColor(color.RGBA{R: 30, G: 30, B: 35, A: 255})
+
+	// Load custom font with better Unicode support
+	g.Context.FontAtlas.SetDefaultFontFromBytes(hackFont, 14)
 
 	wnd.Run(func() {
 		// Force redraw on mouse release to fix combo box display lag
@@ -391,17 +398,17 @@ func renderSoundRuleRow(state *settingsState, index int, toDelete, toMoveUp, toM
 				g.Label("matches:"),
 				g.InputText(&rule.pattern).Size(150).Hint("regex pattern").Label(fmt.Sprintf("##pattern%d", index)),
 				// Action buttons
-				g.Buttonf("^##up%d", index).Size(25, 20).OnClick(func() {
+				g.Buttonf("↑##up%d", index).Size(25, 20).OnClick(func() {
 					*toMoveUp = idx
 				}),
-				g.Buttonf("v##down%d", index).Size(25, 20).OnClick(func() {
+				g.Buttonf("↓##down%d", index).Size(25, 20).OnClick(func() {
 					*toMoveDown = idx
 				}),
 				g.Dummy(75, 0), // spacer to push delete button right
 				g.Style().SetColor(g.StyleColorButton, color.RGBA{R: 180, G: 60, B: 60, A: 255}).
 					SetColor(g.StyleColorButtonHovered, color.RGBA{R: 220, G: 80, B: 80, A: 255}).
 					SetColor(g.StyleColorButtonActive, color.RGBA{R: 150, G: 40, B: 40, A: 255}).To(
-					g.Buttonf("X##delrule%d", index).Size(25, 20).OnClick(func() {
+					g.Buttonf("✕##delrule%d", index).Size(25, 20).OnClick(func() {
 						*toDelete = idx
 					}),
 				),
@@ -424,7 +431,7 @@ func renderSoundRuleRow(state *settingsState, index int, toDelete, toMoveUp, toM
 						g.SameLine()
 					}
 				}),
-				g.Buttonf(">##play%d", index).Size(25, 20).OnClick(func() {
+				g.Buttonf("▶##play%d", index).Size(25, 20).OnClick(func() {
 					if soundToPlay != "" {
 						PlaySound(soundToPlay)
 					}

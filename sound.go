@@ -1,14 +1,69 @@
 // ABOUTME: Sound playback and notification sound matching logic.
-// ABOUTME: Plays sounds via afplay and matches notifications to sound rules.
+// ABOUTME: Plays sounds via macOS NSSound and matches notifications to sound rules.
 
 package main
 
+/*
+#cgo CFLAGS: -x objective-c
+#cgo LDFLAGS: -framework AppKit
+#import <AppKit/AppKit.h>
+#import <Foundation/Foundation.h>
+
+// Cache for preloaded sounds
+static NSMutableDictionary *soundCache = nil;
+
+void initSoundCache() {
+    if (soundCache == nil) {
+        soundCache = [[NSMutableDictionary alloc] init];
+    }
+}
+
+void preloadSound(const char* path) {
+    @autoreleasepool {
+        initSoundCache();
+        NSString *nsPath = [NSString stringWithUTF8String:path];
+        if (soundCache[nsPath] == nil) {
+            NSSound *sound = [[NSSound alloc] initWithContentsOfFile:nsPath byReference:NO];
+            if (sound != nil) {
+                soundCache[nsPath] = sound;
+            }
+        }
+    }
+}
+
+void playSound(const char* path) {
+    @autoreleasepool {
+        initSoundCache();
+        NSString *nsPath = [NSString stringWithUTF8String:path];
+        NSSound *sound = soundCache[nsPath];
+        if (sound == nil) {
+            sound = [[NSSound alloc] initWithContentsOfFile:nsPath byReference:NO];
+            if (sound != nil) {
+                soundCache[nsPath] = sound;
+            }
+        }
+        if (sound != nil) {
+            [sound stop];  // Stop if already playing
+            [sound play];
+        }
+    }
+}
+*/
+import "C"
+
 import (
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+func init() {
+	// Preload built-in sounds for instant playback
+	for _, name := range BuiltinSounds {
+		path := resolveSoundPath(name)
+		C.preloadSound(C.CString(path))
+	}
+}
 
 // BuiltinSounds lists available macOS system sounds.
 var BuiltinSounds = []string{
@@ -73,11 +128,8 @@ func PlaySound(name string) {
 		return
 	}
 
-	// Play asynchronously
-	go func() {
-		cmd := exec.Command("afplay", path)
-		_ = cmd.Run()
-	}()
+	// Play via NSSound (fast, no process spawn)
+	C.playSound(C.CString(path))
 }
 
 // resolveSoundPath converts a sound name to a file path.
