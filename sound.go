@@ -1,74 +1,51 @@
-// ABOUTME: Sound playback and notification sound matching logic.
-// ABOUTME: Plays sounds via macOS NSSound and matches notifications to sound rules.
+// ABOUTME: Sound matching and playback for notification sounds.
+// ABOUTME: Uses beep library for cross-platform tone generation.
 
 package main
 
-/*
-#cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework AppKit
-#import <AppKit/AppKit.h>
-#import <Foundation/Foundation.h>
-
-// Cache for preloaded sounds
-static NSMutableDictionary *soundCache = nil;
-
-void initSoundCache() {
-    if (soundCache == nil) {
-        soundCache = [[NSMutableDictionary alloc] init];
-    }
-}
-
-void preloadSound(const char* path) {
-    @autoreleasepool {
-        initSoundCache();
-        NSString *nsPath = [NSString stringWithUTF8String:path];
-        if (soundCache[nsPath] == nil) {
-            NSSound *sound = [[NSSound alloc] initWithContentsOfFile:nsPath byReference:NO];
-            if (sound != nil) {
-                soundCache[nsPath] = sound;
-            }
-        }
-    }
-}
-
-void playSound(const char* path) {
-    @autoreleasepool {
-        initSoundCache();
-        NSString *nsPath = [NSString stringWithUTF8String:path];
-        NSSound *sound = soundCache[nsPath];
-        if (sound == nil) {
-            sound = [[NSSound alloc] initWithContentsOfFile:nsPath byReference:NO];
-            if (sound != nil) {
-                soundCache[nsPath] = sound;
-            }
-        }
-        if (sound != nil) {
-            [sound stop];  // Stop if already playing
-            [sound play];
-        }
-    }
-}
-*/
-import "C"
-
 import (
-	"path/filepath"
+	"log"
 	"regexp"
-	"strings"
+	"sync"
+	"time"
+
+	"github.com/gopxl/beep/v2"
+	"github.com/gopxl/beep/v2/generators"
+	"github.com/gopxl/beep/v2/speaker"
 )
 
-func init() {
-	// Preload built-in sounds for instant playback
-	for _, name := range BuiltinSounds {
-		path := resolveSoundPath(name)
-		C.preloadSound(C.CString(path))
-	}
+// Tone defines a generated sound with frequency and duration.
+type Tone struct {
+	Frequency float64
+	Duration  time.Duration
 }
 
-// BuiltinSounds lists available macOS system sounds.
-var BuiltinSounds = []string{
-	"Basso", "Blow", "Bottle", "Frog", "Funk", "Glass",
-	"Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink",
+// builtinTones maps sound names to tone parameters.
+var builtinTones = map[string]Tone{
+	"ping":   {Frequency: 880, Duration: 100 * time.Millisecond},
+	"alert":  {Frequency: 440, Duration: 200 * time.Millisecond},
+	"low":    {Frequency: 220, Duration: 200 * time.Millisecond},
+	"chime":  {Frequency: 659, Duration: 150 * time.Millisecond}, // E5
+	"beep":   {Frequency: 523, Duration: 100 * time.Millisecond}, // C5
+	"notify": {Frequency: 587, Duration: 120 * time.Millisecond}, // D5
+}
+
+// BuiltinSounds lists available sound names.
+var BuiltinSounds = []string{"ping", "alert", "low", "chime", "beep", "notify"}
+
+const sampleRate = beep.SampleRate(44100)
+
+var (
+	speakerOnce sync.Once
+	speakerErr  error
+)
+
+// initSpeaker initializes the audio speaker (called once).
+func initSpeaker() error {
+	speakerOnce.Do(func() {
+		speakerErr = speaker.Init(sampleRate, sampleRate.N(50*time.Millisecond))
+	})
+	return speakerErr
 }
 
 // MatchSound finds the first matching sound rule for a notification.
@@ -116,40 +93,37 @@ func matchesRule(n Notification, rule SoundRule) bool {
 }
 
 // PlaySound plays the specified sound asynchronously.
-// name can be a built-in sound name or an absolute path to a sound file.
-// Returns immediately; sound plays in background.
+// name should be one of the built-in sound names.
 func PlaySound(name string) {
 	if name == "" || name == "none" {
 		return
 	}
 
-	path := resolveSoundPath(name)
-	if path == "" {
+	tone, ok := builtinTones[name]
+	if !ok {
+		log.Printf("Unknown sound: %s", name)
 		return
 	}
 
-	// Play via NSSound (fast, no process spawn)
-	C.playSound(C.CString(path))
-}
-
-// resolveSoundPath converts a sound name to a file path.
-func resolveSoundPath(name string) string {
-	// Check if it's already an absolute path
-	if strings.HasPrefix(name, "/") {
-		return name
+	if err := initSpeaker(); err != nil {
+		log.Printf("Failed to initialize speaker: %v", err)
+		return
 	}
 
-	// Try as a built-in system sound
-	systemPath := filepath.Join("/System/Library/Sounds", name+".aiff")
-	return systemPath
+	streamer, err := generators.SineTone(sampleRate, tone.Frequency)
+	if err != nil {
+		log.Printf("Failed to generate tone: %v", err)
+		return
+	}
+
+	// Limit to the specified duration
+	limited := beep.Take(sampleRate.N(tone.Duration), streamer)
+
+	speaker.Play(limited)
 }
 
 // IsBuiltinSound returns true if the name is a known built-in sound.
 func IsBuiltinSound(name string) bool {
-	for _, s := range BuiltinSounds {
-		if s == name {
-			return true
-		}
-	}
-	return false
+	_, ok := builtinTones[name]
+	return ok
 }
