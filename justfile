@@ -39,7 +39,7 @@ macos:
 
 # Build and push Docker image via Depot
 docker:
-    depot build --platform linux/amd64,linux/arm64 -t aeolun/cross-notifier-server --provenance=true --sbom=true --push .
+    depot build --platform linux/amd64,linux/arm64 -t aeolun/cross-notifier-server:latest ${IMAGE_TAG:+-t aeolun/cross-notifier-server:$IMAGE_TAG} --provenance=true --sbom=true --push .
 
 # Build Docker image locally
 docker-local:
