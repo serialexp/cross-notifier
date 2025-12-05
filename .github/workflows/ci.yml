@@ -32,7 +32,9 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libxi-dev \
-            libxxf86vm-dev
+            libxxf86vm-dev \
+            libasound2-dev \
+            libgtk-3-dev
 
       - name: Check formatting
         run: |
@@ -72,7 +74,9 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libxi-dev \
-            libxxf86vm-dev
+            libxxf86vm-dev \
+            libasound2-dev \
+            libgtk-3-dev
 
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
@@ -109,7 +113,9 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libxi-dev \
-            libxxf86vm-dev
+            libxxf86vm-dev \
+            libasound2-dev \
+            libgtk-3-dev
 
       - name: Build daemon
         run: go build -v .
