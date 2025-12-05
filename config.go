@@ -16,10 +16,25 @@ type Server struct {
 	Label  string `json:"label,omitempty"` // optional display name for the server
 }
 
+// SoundRule defines conditions for playing a specific sound.
+type SoundRule struct {
+	Server  string `json:"server,omitempty"`  // server label filter (empty = any)
+	Status  string `json:"status,omitempty"`  // status filter: info/success/warning/error (empty = any)
+	Pattern string `json:"pattern,omitempty"` // regex on title+message (empty = any)
+	Sound   string `json:"sound"`             // sound name, path, or "none"
+}
+
+// SoundConfig holds notification sound settings.
+type SoundConfig struct {
+	Enabled bool        `json:"enabled"` // master toggle
+	Rules   []SoundRule `json:"rules"`   // evaluated in order, first match wins
+}
+
 // Config holds the persistent configuration for the daemon.
 type Config struct {
-	Name    string   `json:"name,omitempty"` // client display name for identification
-	Servers []Server `json:"servers,omitempty"`
+	Name    string      `json:"name,omitempty"` // client display name for identification
+	Servers []Server    `json:"servers,omitempty"`
+	Sound   SoundConfig `json:"sound,omitempty"`
 }
 
 // ConfigPath returns the platform-appropriate path for the config file.

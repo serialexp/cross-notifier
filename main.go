@@ -64,19 +64,20 @@ var (
 )
 
 type Notification struct {
-	ID        int64     `json:"-"`            // local ID for GUI tracking
-	ServerID  string    `json:"id,omitempty"` // server-assigned ID for coordination
-	Title     string    `json:"title"`
-	Message   string    `json:"message"`
-	Status    string    `json:"status,omitempty"`    // info, success, warning, error
-	IconData  string    `json:"iconData,omitempty"`  // base64 encoded image
-	IconHref  string    `json:"iconHref,omitempty"`  // URL to fetch image from
-	IconPath  string    `json:"iconPath,omitempty"`  // local file path
-	Duration  int       `json:"duration,omitempty"`  // seconds: >0 auto-close, 0/omitted=persistent
-	Actions   []Action  `json:"actions,omitempty"`   // clickable action buttons
-	Exclusive bool      `json:"exclusive,omitempty"` // if true, resolved when any client takes action
-	CreatedAt time.Time `json:"-"`
-	ExpiresAt time.Time `json:"-"`
+	ID          int64     `json:"-"`            // local ID for GUI tracking
+	ServerID    string    `json:"id,omitempty"` // server-assigned ID for coordination
+	ServerLabel string    `json:"-"`            // label of server that sent this notification
+	Title       string    `json:"title"`
+	Message     string    `json:"message"`
+	Status      string    `json:"status,omitempty"`    // info, success, warning, error
+	IconData    string    `json:"iconData,omitempty"`  // base64 encoded image
+	IconHref    string    `json:"iconHref,omitempty"`  // URL to fetch image from
+	IconPath    string    `json:"iconPath,omitempty"`  // local file path
+	Duration    int       `json:"duration,omitempty"`  // seconds: >0 auto-close, 0/omitted=persistent
+	Actions     []Action  `json:"actions,omitempty"`   // clickable action buttons
+	Exclusive   bool      `json:"exclusive,omitempty"` // if true, resolved when any client takes action
+	CreatedAt   time.Time `json:"-"`
+	ExpiresAt   time.Time `json:"-"`
 }
 
 var (
@@ -102,9 +103,28 @@ var (
 
 	// Map server IDs to local IDs for exclusive notifications
 	serverIDToLocalID = make(map[string]int64)
+
+	// Sound configuration (updated when config loads/reloads)
+	currentSoundConfig SoundConfig
+	soundConfigMu      sync.RWMutex
 )
 
+// updateSoundConfig updates the global sound configuration.
+func updateSoundConfig(cfg SoundConfig) {
+	soundConfigMu.Lock()
+	currentSoundConfig = cfg
+	soundConfigMu.Unlock()
+}
+
 func addNotification(n Notification) {
+	// Play notification sound (outside lock to avoid blocking)
+	soundConfigMu.RLock()
+	soundCfg := currentSoundConfig
+	soundConfigMu.RUnlock()
+	if sound := MatchSound(n, soundCfg); sound != "" {
+		PlaySound(sound)
+	}
+
 	notifMu.Lock()
 	defer notifMu.Unlock()
 
@@ -785,7 +805,13 @@ func getConnectedClient() *NotificationClient {
 
 // connectToServer establishes a WebSocket connection to a notification server.
 func connectToServer(server Server, clientName string) {
+	serverLabel := server.Label
+	if serverLabel == "" {
+		serverLabel = server.URL
+	}
+
 	client := NewNotificationClient(server.URL, server.Secret, clientName, func(n Notification) {
+		n.ServerLabel = serverLabel
 		addNotification(n)
 	})
 	client.SetOnResolved(func(resolved ResolvedMessage) {
@@ -794,11 +820,6 @@ func connectToServer(server Server, clientName string) {
 			g.Update()
 		}
 	})
-
-	serverLabel := server.Label
-	if serverLabel == "" {
-		serverLabel = server.URL
-	}
 
 	client.OnConnect = func() {
 		addNotification(Notification{
@@ -926,6 +947,9 @@ func watchConfig(currentCfg *Config) {
 							return
 						}
 
+						// Update sound configuration
+						updateSoundConfig(cfg.Sound)
+
 						// Build map of new servers
 						newServers := make(map[string]Server)
 						for _, s := range cfg.Servers {
@@ -991,6 +1015,9 @@ func runDaemon(port string, cfg *Config) {
 		}
 		return count
 	})
+
+	// Initialize sound configuration
+	updateSoundConfig(cfg.Sound)
 
 	// Start local HTTP server in background
 	go startHTTPServer(port)
