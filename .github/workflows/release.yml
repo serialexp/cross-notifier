@@ -35,7 +35,9 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libxi-dev \
-            libxxf86vm-dev
+            libxxf86vm-dev \
+            libasound2-dev \
+            libgtk-3-dev
 
       - name: Build
         run: |
