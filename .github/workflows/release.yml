@@ -92,6 +92,7 @@ jobs:
         env:
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: 1
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           go build -o cross-notifier .
 
@@ -134,7 +135,7 @@ jobs:
               <key>CFBundleSignature</key>
               <string>????</string>
               <key>LSMinimumSystemVersion</key>
-              <string>10.15</string>
+              <string>11.0</string>
               <key>NSHighResolutionCapable</key>
               <true/>
               <key>LSUIElement</key>

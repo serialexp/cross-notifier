@@ -32,7 +32,7 @@ if [ -f "logo.png" ]; then
 fi
 
 echo "Building Go binary..."
-go build -o cross-notifier .
+MACOSX_DEPLOYMENT_TARGET=11.0 go build -o cross-notifier .
 
 echo "Creating app bundle structure..."
 rm -rf "${APP_DIR}"
@@ -72,7 +72,7 @@ cat > "${CONTENTS_DIR}/Info.plist" << EOF
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>LSMinimumSystemVersion</key>
-    <string>10.15</string>
+    <string>11.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSUIElement</key>
