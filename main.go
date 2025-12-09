@@ -105,25 +105,32 @@ var (
 	// Map server IDs to local IDs for exclusive notifications
 	serverIDToLocalID = make(map[string]int64)
 
-	// Sound configuration (updated when config loads/reloads)
-	currentSoundConfig SoundConfig
-	soundConfigMu      sync.RWMutex
+	// Rules configuration (updated when config loads/reloads)
+	currentRulesConfig RulesConfig
+	rulesConfigMu      sync.RWMutex
 )
 
-// updateSoundConfig updates the global sound configuration.
-func updateSoundConfig(cfg SoundConfig) {
-	soundConfigMu.Lock()
-	currentSoundConfig = cfg
-	soundConfigMu.Unlock()
+// updateRulesConfig updates the global rules configuration.
+func updateRulesConfig(cfg RulesConfig) {
+	rulesConfigMu.Lock()
+	currentRulesConfig = cfg
+	rulesConfigMu.Unlock()
 }
 
 func addNotification(n Notification) {
-	// Play notification sound (outside lock to avoid blocking)
-	soundConfigMu.RLock()
-	soundCfg := currentSoundConfig
-	soundConfigMu.RUnlock()
-	if sound := MatchSound(n, soundCfg); sound != "" {
-		PlaySound(sound)
+	// Check rules for sound and suppression
+	rulesConfigMu.RLock()
+	rulesCfg := currentRulesConfig
+	rulesConfigMu.RUnlock()
+
+	rule := MatchRule(n, rulesCfg)
+	if rule != nil {
+		if rule.Suppress {
+			return // Don't show this notification
+		}
+		if rule.Sound != "" {
+			PlaySound(rule.Sound)
+		}
 	}
 
 	notifMu.Lock()
@@ -931,8 +938,8 @@ func watchConfig(currentCfg *Config) {
 							return
 						}
 
-						// Update sound configuration
-						updateSoundConfig(cfg.Sound)
+						// Update rules configuration
+						updateRulesConfig(cfg.Rules)
 
 						// Build map of new servers
 						newServers := make(map[string]Server)
@@ -1000,8 +1007,8 @@ func runDaemon(port string, cfg *Config) {
 		return count
 	})
 
-	// Initialize sound configuration
-	updateSoundConfig(cfg.Sound)
+	// Initialize rules configuration
+	updateRulesConfig(cfg.Rules)
 
 	// Start local HTTP server in background
 	go startHTTPServer(port)

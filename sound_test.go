@@ -8,7 +8,7 @@ import (
 )
 
 func TestMatchSoundNoRules(t *testing.T) {
-	cfg := SoundConfig{Enabled: true, Rules: nil}
+	cfg := RulesConfig{Enabled: true, Rules: nil}
 	n := Notification{Title: "Test", Message: "Hello"}
 
 	sound := MatchSound(n, cfg)
@@ -18,9 +18,9 @@ func TestMatchSoundNoRules(t *testing.T) {
 }
 
 func TestMatchSoundDisabled(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: false,
-		Rules:   []SoundRule{{Sound: "Ping"}},
+		Rules:   []NotificationRule{{Sound: "Ping"}},
 	}
 	n := Notification{Title: "Test", Message: "Hello"}
 
@@ -31,9 +31,9 @@ func TestMatchSoundDisabled(t *testing.T) {
 }
 
 func TestMatchSoundWildcardRule(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: true,
-		Rules:   []SoundRule{{Sound: "Ping"}},
+		Rules:   []NotificationRule{{Sound: "Ping"}},
 	}
 	n := Notification{Title: "Test", Message: "Hello"}
 
@@ -44,9 +44,9 @@ func TestMatchSoundWildcardRule(t *testing.T) {
 }
 
 func TestMatchSoundServerFilter(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: true,
-		Rules: []SoundRule{
+		Rules: []NotificationRule{
 			{Server: "Work", Sound: "Basso"},
 			{Sound: "Ping"}, // fallback
 		},
@@ -71,9 +71,9 @@ func TestMatchSoundServerFilter(t *testing.T) {
 }
 
 func TestMatchSoundStatusFilter(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: true,
-		Rules: []SoundRule{
+		Rules: []NotificationRule{
 			{Status: "error", Sound: "Basso"},
 			{Status: "warning", Sound: "Funk"},
 			{Sound: "Ping"},
@@ -101,9 +101,9 @@ func TestMatchSoundStatusFilter(t *testing.T) {
 }
 
 func TestMatchSoundPatternFilter(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: true,
-		Rules: []SoundRule{
+		Rules: []NotificationRule{
 			{Pattern: "(?i)urgent", Sound: "Basso"},
 			{Pattern: "(?i)deploy", Sound: "Hero"},
 			{Sound: "Ping"},
@@ -132,9 +132,9 @@ func TestMatchSoundPatternFilter(t *testing.T) {
 }
 
 func TestMatchSoundCombinedFilters(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: true,
-		Rules: []SoundRule{
+		Rules: []NotificationRule{
 			{Server: "Work", Status: "error", Sound: "Basso"},
 			{Server: "Work", Sound: "Funk"},
 			{Status: "error", Sound: "Glass"},
@@ -165,9 +165,9 @@ func TestMatchSoundCombinedFilters(t *testing.T) {
 }
 
 func TestMatchSoundNoneValue(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: true,
-		Rules: []SoundRule{
+		Rules: []NotificationRule{
 			{Status: "info", Sound: "none"},
 			{Sound: "Ping"},
 		},
@@ -181,9 +181,9 @@ func TestMatchSoundNoneValue(t *testing.T) {
 }
 
 func TestMatchSoundFirstMatchWins(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: true,
-		Rules: []SoundRule{
+		Rules: []NotificationRule{
 			{Sound: "First"},
 			{Sound: "Second"},
 			{Sound: "Third"},
@@ -198,9 +198,9 @@ func TestMatchSoundFirstMatchWins(t *testing.T) {
 }
 
 func TestMatchSoundInvalidRegexSkipsRule(t *testing.T) {
-	cfg := SoundConfig{
+	cfg := RulesConfig{
 		Enabled: true,
-		Rules: []SoundRule{
+		Rules: []NotificationRule{
 			{Pattern: "[invalid", Sound: "Bad"},
 			{Sound: "Good"},
 		},
@@ -210,5 +210,96 @@ func TestMatchSoundInvalidRegexSkipsRule(t *testing.T) {
 	sound := MatchSound(n, cfg)
 	if sound != "Good" {
 		t.Errorf("expected invalid regex rule to be skipped, got %q", sound)
+	}
+}
+
+func TestMatchRuleSuppression(t *testing.T) {
+	cfg := RulesConfig{
+		Enabled: true,
+		Rules: []NotificationRule{
+			{Source: "spammy", Suppress: true},
+			{Status: "error", Sound: "alert"},
+			{Sound: "ping"},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		notif     Notification
+		wantMatch bool
+		wantSupp  bool
+		wantSound string
+	}{
+		{
+			name:      "spammy source gets suppressed",
+			notif:     Notification{Title: "Test", Source: "spammy"},
+			wantMatch: true,
+			wantSupp:  true,
+		},
+		{
+			name:      "error status gets alert sound",
+			notif:     Notification{Title: "Test", Status: "error"},
+			wantMatch: true,
+			wantSupp:  false,
+			wantSound: "alert",
+		},
+		{
+			name:      "normal notification gets ping",
+			notif:     Notification{Title: "Test"},
+			wantMatch: true,
+			wantSupp:  false,
+			wantSound: "ping",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rule := MatchRule(tt.notif, cfg)
+			if tt.wantMatch && rule == nil {
+				t.Error("expected rule match, got nil")
+				return
+			}
+			if !tt.wantMatch && rule != nil {
+				t.Errorf("expected no match, got %+v", rule)
+				return
+			}
+			if rule != nil {
+				if rule.Suppress != tt.wantSupp {
+					t.Errorf("Suppress: got %v, want %v", rule.Suppress, tt.wantSupp)
+				}
+				if rule.Sound != tt.wantSound {
+					t.Errorf("Sound: got %q, want %q", rule.Sound, tt.wantSound)
+				}
+			}
+		})
+	}
+}
+
+func TestMatchRuleSourceFilter(t *testing.T) {
+	cfg := RulesConfig{
+		Enabled: true,
+		Rules: []NotificationRule{
+			{Source: "github", Sound: "chime"},
+			{Source: "jenkins", Sound: "alert"},
+			{Sound: "ping"},
+		},
+	}
+
+	tests := []struct {
+		source string
+		want   string
+	}{
+		{"github", "chime"},
+		{"jenkins", "alert"},
+		{"other", "ping"},
+		{"", "ping"},
+	}
+
+	for _, tt := range tests {
+		n := Notification{Title: "Test", Source: tt.source}
+		sound := MatchSound(n, cfg)
+		if sound != tt.want {
+			t.Errorf("source=%q: got %q, want %q", tt.source, sound, tt.want)
+		}
 	}
 }

@@ -48,24 +48,34 @@ func initSpeaker() error {
 	return speakerErr
 }
 
-// MatchSound finds the first matching sound rule for a notification.
-// Returns the sound to play, or empty string if no match or disabled.
-func MatchSound(n Notification, cfg SoundConfig) string {
+// MatchRule finds the first matching rule for a notification.
+// Returns nil if rules are disabled or no rule matches.
+func MatchRule(n Notification, cfg RulesConfig) *NotificationRule {
 	if !cfg.Enabled {
-		return ""
+		return nil
 	}
 
-	for _, rule := range cfg.Rules {
-		if matchesRule(n, rule) {
-			return rule.Sound
+	for i := range cfg.Rules {
+		if matchesRule(n, cfg.Rules[i]) {
+			return &cfg.Rules[i]
 		}
 	}
 
-	return ""
+	return nil
+}
+
+// MatchSound finds the first matching sound rule for a notification.
+// Returns the sound to play, or empty string if no match or disabled.
+func MatchSound(n Notification, cfg RulesConfig) string {
+	rule := MatchRule(n, cfg)
+	if rule == nil {
+		return ""
+	}
+	return rule.Sound
 }
 
 // matchesRule checks if a notification matches all conditions of a rule.
-func matchesRule(n Notification, rule SoundRule) bool {
+func matchesRule(n Notification, rule NotificationRule) bool {
 	// Server filter
 	if rule.Server != "" && rule.Server != n.ServerLabel {
 		return false

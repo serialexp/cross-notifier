@@ -76,8 +76,8 @@ func ShowSettingsWindow(initial *Config, isConnected func(url string) bool) Sett
 			})
 		}
 		// Initialize sound config
-		state.soundEnabled = initial.Sound.Enabled
-		for _, rule := range initial.Sound.Rules {
+		state.soundEnabled = initial.Rules.Enabled
+		for _, rule := range initial.Rules.Rules {
 			state.soundRules = append(state.soundRules, soundRuleToEntry(rule, initial.Servers))
 		}
 	}
@@ -253,16 +253,16 @@ func stateToConfig(state *settingsState) *Config {
 		}
 	}
 	// Convert sound config
-	cfg.Sound.Enabled = state.soundEnabled
+	cfg.Rules.Enabled = state.soundEnabled
 	for _, entry := range state.soundRules {
 		rule := entryToSoundRule(entry, state.servers)
-		cfg.Sound.Rules = append(cfg.Sound.Rules, rule)
+		cfg.Rules.Rules = append(cfg.Rules.Rules, rule)
 	}
 	return cfg
 }
 
-// soundRuleToEntry converts a SoundRule to editable entry state.
-func soundRuleToEntry(rule SoundRule, servers []Server) soundRuleEntry {
+// soundRuleToEntry converts a NotificationRule to editable entry state.
+func soundRuleToEntry(rule NotificationRule, servers []Server) soundRuleEntry {
 	entry := soundRuleEntry{
 		pattern: rule.Pattern,
 	}
@@ -314,9 +314,9 @@ func soundRuleToEntry(rule SoundRule, servers []Server) soundRuleEntry {
 	return entry
 }
 
-// entryToSoundRule converts an editable entry back to a SoundRule.
-func entryToSoundRule(entry soundRuleEntry, servers []serverEntry) SoundRule {
-	rule := SoundRule{
+// entryToSoundRule converts an editable entry back to a NotificationRule.
+func entryToSoundRule(entry soundRuleEntry, servers []serverEntry) NotificationRule {
+	rule := NotificationRule{
 		Pattern: entry.pattern,
 	}
 

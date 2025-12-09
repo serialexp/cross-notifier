@@ -16,26 +16,30 @@ type Server struct {
 	Label  string `json:"label,omitempty"` // optional display name for the server
 }
 
-// SoundRule defines conditions for playing a specific sound.
-type SoundRule struct {
-	Server  string `json:"server,omitempty"`  // server label filter (empty = any)
-	Source  string `json:"source,omitempty"`  // notification source filter (empty = any)
-	Status  string `json:"status,omitempty"`  // status filter: info/success/warning/error (empty = any)
-	Pattern string `json:"pattern,omitempty"` // regex on title+message (empty = any)
-	Sound   string `json:"sound"`             // sound name, path, or "none"
+// NotificationRule defines conditions and actions for matching notifications.
+type NotificationRule struct {
+	// Filters (all must match, empty = any)
+	Server  string `json:"server,omitempty"`  // server label filter
+	Source  string `json:"source,omitempty"`  // notification source filter
+	Status  string `json:"status,omitempty"`  // status filter: info/success/warning/error
+	Pattern string `json:"pattern,omitempty"` // regex on title+message
+
+	// Actions
+	Sound    string `json:"sound,omitempty"`    // sound to play (empty = no sound)
+	Suppress bool   `json:"suppress,omitempty"` // if true, don't show notification
 }
 
-// SoundConfig holds notification sound settings.
-type SoundConfig struct {
-	Enabled bool        `json:"enabled"` // master toggle
-	Rules   []SoundRule `json:"rules"`   // evaluated in order, first match wins
+// RulesConfig holds notification rule settings.
+type RulesConfig struct {
+	Enabled bool               `json:"enabled"` // master toggle
+	Rules   []NotificationRule `json:"rules"`   // evaluated in order, first match wins
 }
 
 // Config holds the persistent configuration for the daemon.
 type Config struct {
 	Name    string      `json:"name,omitempty"` // client display name for identification
 	Servers []Server    `json:"servers,omitempty"`
-	Sound   SoundConfig `json:"sound,omitempty"`
+	Rules   RulesConfig `json:"rules,omitempty"`
 }
 
 // ConfigPath returns the platform-appropriate path for the config file.
