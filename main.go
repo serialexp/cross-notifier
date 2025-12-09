@@ -67,6 +67,7 @@ type Notification struct {
 	ID          int64     `json:"-"`            // local ID for GUI tracking
 	ServerID    string    `json:"id,omitempty"` // server-assigned ID for coordination
 	ServerLabel string    `json:"-"`            // label of server that sent this notification
+	Source      string    `json:"source"`       // identifier of the service that sent this notification
 	Title       string    `json:"title"`
 	Message     string    `json:"message"`
 	Status      string    `json:"status,omitempty"`    // info, success, warning, error

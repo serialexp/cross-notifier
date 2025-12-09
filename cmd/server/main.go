@@ -74,6 +74,7 @@ type Action struct {
 // Notification represents a notification message.
 type Notification struct {
 	ID        string   `json:"id,omitempty"`
+	Source    string   `json:"source"`
 	Title     string   `json:"title"`
 	Message   string   `json:"message"`
 	Status    string   `json:"status,omitempty"`
@@ -256,6 +257,11 @@ func (s *Server) HandleNotify(w http.ResponseWriter, r *http.Request) {
 	var n Notification
 	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if n.Source == "" {
+		http.Error(w, "source is required", http.StatusBadRequest)
 		return
 	}
 

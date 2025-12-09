@@ -71,6 +71,11 @@ func matchesRule(n Notification, rule SoundRule) bool {
 		return false
 	}
 
+	// Source filter
+	if rule.Source != "" && rule.Source != n.Source {
+		return false
+	}
+
 	// Status filter
 	if rule.Status != "" && rule.Status != n.Status {
 		return false

@@ -19,6 +19,7 @@ type Server struct {
 // SoundRule defines conditions for playing a specific sound.
 type SoundRule struct {
 	Server  string `json:"server,omitempty"`  // server label filter (empty = any)
+	Source  string `json:"source,omitempty"`  // notification source filter (empty = any)
 	Status  string `json:"status,omitempty"`  // status filter: info/success/warning/error (empty = any)
 	Pattern string `json:"pattern,omitempty"` // regex on title+message (empty = any)
 	Sound   string `json:"sound"`             // sound name, path, or "none"
