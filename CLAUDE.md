@@ -33,29 +33,29 @@ just docker-local
 # Daemon mode (displays notifications)
 ./cross-notifier
 
-# Server mode (forwards to connected clients)
-./cross-notifier -server -secret <key>
-
 # Daemon connected to remote server
 ./cross-notifier -connect ws://host:9876/ws -secret <key>
 
 # Open settings window
 ./cross-notifier -setup
+
+# Run standalone server (Docker/headless)
+./cmd/server/server -secret <key>
 ```
 
 ## Architecture
 
-**Modes of operation:**
-- **Daemon mode** (default): Displays notifications locally via giu/imgui GUI. Accepts HTTP POST on `:9876/notify`. Optionally connects to a remote server to receive notifications.
-- **Server mode** (`-server`): Headless. Accepts HTTP POST notifications and broadcasts to connected WebSocket clients. Does not display notifications itself.
+**Binaries:**
+- **Daemon** (`cross-notifier`): Displays notifications locally via giu/imgui GUI. Accepts HTTP POST on `:9876/notify`. Optionally connects to a remote server to receive notifications.
+- **Server** (`cmd/server`): Headless. Accepts HTTP POST notifications and broadcasts to connected WebSocket clients. Handles exclusive notification coordination.
 
 **Key files:**
 - `main.go` - Entry point, CLI flags, daemon GUI loop
-- `server.go` - WebSocket server for broadcasting notifications
 - `client.go` - WebSocket client with reconnection logic
 - `icon.go` - Icon loading from file paths, URLs, and base64 data
 - `config.go` - Persistent configuration (server URL, secret)
 - `settings.go` - First-run settings window
+- `cmd/server/main.go` - Standalone server for Docker/headless deployment
 
 **Notification flow:**
 1. Service sends POST to server's `/notify` endpoint with auth header
@@ -75,3 +75,15 @@ just docker-local
 ## imgui/giu Quirks
 
 **Cursor X position resets after TextWrapped:** When using `imgui.TextWrapped()`, the cursor X position resets to 0 on the next line. To maintain consistent left padding across multiple text elements, explicitly call `imgui.SetCursorPosX(x)` before each text element. Using `imgui.SetCursorPos()` once at the start is not sufficient.
+
+## Git Commits
+
+Follow the [Conventional Commits](https://www.conventionalcommits.org/) specification for commit messages:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+```
+
+Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`
