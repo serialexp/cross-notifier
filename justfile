@@ -41,9 +41,9 @@ macos:
 docker:
     depot build --platform linux/amd64,linux/arm64 -t aeolun/cross-notifier-server:latest ${IMAGE_TAG:+-t aeolun/cross-notifier-server:$IMAGE_TAG} --provenance=true --sbom=true --push .
 
-# Build Docker image locally
+# Build Docker image locally (loads into local Docker daemon)
 docker-local:
-    docker build -t cross-notifier-server .
+    depot build --platform linux/amd64 -t cross-notifier-server --load .
 
 # Send test notifications in parallel (default 10)
 stress count="10":
