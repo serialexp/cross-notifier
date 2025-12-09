@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"image"
 	_ "image/jpeg"
-	"image/png"
+	_ "image/png"
 	"net/http"
 	"os"
 	"time"
@@ -83,22 +83,4 @@ func resolveIcon(n Notification) (image.Image, error) {
 		return loadIconFromPath(n.IconPath)
 	}
 	return nil, nil
-}
-
-// fetchAndEncodeIcon fetches an image from a URL, resizes it, and returns base64-encoded PNG.
-func fetchAndEncodeIcon(url string) (string, error) {
-	img, err := loadIconFromURL(url)
-	if err != nil {
-		return "", err
-	}
-	return encodeImageToBase64(img)
-}
-
-// encodeImageToBase64 encodes an image as base64 PNG.
-func encodeImageToBase64(img image.Image) (string, error) {
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return "", fmt.Errorf("PNG encode: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }

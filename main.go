@@ -735,23 +735,6 @@ func positionWindow() {
 	wnd.SetPos(x, y)
 }
 
-func runServer(port, secret string) {
-	server := NewNotificationServer(secret)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/notify", server.HandleNotify)
-	mux.HandleFunc("/ws", server.HandleWebSocket)
-
-	addr := ":" + port
-	log.Printf("Server listening on %s", addr)
-	log.Printf("  POST /notify - send notifications (requires auth)")
-	log.Printf("  GET  /ws     - WebSocket connection for clients (requires auth)")
-
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatalf("Server failed: %v", err)
-	}
-}
-
 // makeConnectionStatusChecker returns a function that queries the daemon's
 // /status endpoint to check if a server URL is connected.
 func makeConnectionStatusChecker(daemonPort string) func(string) bool {
@@ -1051,7 +1034,6 @@ func runDaemon(port string, cfg *Config) {
 }
 
 func main() {
-	serverMode := flag.Bool("server", false, "Run as notification server")
 	port := flag.String("port", defaultPort, "Port to listen on (or CROSS_NOTIFIER_PORT env)")
 	connect := flag.String("connect", "", "WebSocket URL of server to connect to (or CROSS_NOTIFIER_SERVER env)")
 	secret := flag.String("secret", "", "Shared secret for authentication (or CROSS_NOTIFIER_SECRET env)")
@@ -1074,14 +1056,6 @@ func main() {
 	}
 	if *name == "" {
 		*name = os.Getenv("CROSS_NOTIFIER_NAME")
-	}
-
-	if *serverMode {
-		if *secret == "" {
-			log.Fatal("Server mode requires -secret flag or CROSS_NOTIFIER_SECRET env")
-		}
-		runServer(*port, *secret)
-		return
 	}
 
 	// Daemon mode - load config file if it exists
