@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image/color"
 
+	"github.com/AllenDang/cimgui-go/imgui"
 	g "github.com/AllenDang/giu"
 	"github.com/sqweek/dialog"
 )
@@ -199,14 +200,16 @@ func ShowSettingsWindow(initial *Config, isConnected func(url string) bool) Sett
 					done = true
 				}),
 			),
-			g.Spacing(),
-			g.Row(
-				g.Dummy(0, 0),
-				g.Style().SetColor(g.StyleColorText, color.RGBA{R: 128, G: 128, B: 128, A: 255}).To(
-					g.Label("v"+Version),
-				),
-			),
 		)
+
+		// Draw version in bottom right corner
+		windowWidth, windowHeight := g.GetAvailableRegion()
+		versionText := "v" + Version
+		textWidth := float32(len(versionText) * 7) // approximate width
+		imgui.SetCursorPos(imgui.Vec2{X: windowWidth - textWidth - 10, Y: windowHeight - 20})
+		g.Style().SetColor(g.StyleColorText, color.RGBA{R: 128, G: 128, B: 128, A: 255}).To(
+			g.Label(versionText),
+		).Build()
 
 		if done {
 			wnd.SetShouldClose(true)
