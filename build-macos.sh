@@ -32,7 +32,7 @@ if [ -f "logo.png" ]; then
 fi
 
 echo "Building Go binary..."
-MACOSX_DEPLOYMENT_TARGET=11.0 go build -o cross-notifier .
+MACOSX_DEPLOYMENT_TARGET=11.0 go build -ldflags "-X main.Version=${VERSION}" -o cross-notifier .
 
 echo "Creating app bundle structure..."
 rm -rf "${APP_DIR}"

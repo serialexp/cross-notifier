@@ -199,6 +199,13 @@ func ShowSettingsWindow(initial *Config, isConnected func(url string) bool) Sett
 					done = true
 				}),
 			),
+			g.Spacing(),
+			g.Row(
+				g.Dummy(0, 0),
+				g.Style().SetColor(g.StyleColorText, color.RGBA{R: 128, G: 128, B: 128, A: 255}).To(
+					g.Label("v"+Version),
+				),
+			),
 		)
 
 		if done {

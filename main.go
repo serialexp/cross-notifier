@@ -24,6 +24,9 @@ import (
 	xdraw "golang.org/x/image/draw"
 )
 
+// Version is set at build time via ldflags.
+var Version = "dev"
+
 const (
 	defaultPort      = "9876"
 	maxVisible       = 4

@@ -39,10 +39,6 @@ jobs:
             libasound2-dev \
             libgtk-3-dev
 
-      - name: Build
-        run: |
-          go build -o cross-notifier .
-
       - name: Get version
         id: version
         run: |
@@ -51,6 +47,11 @@ jobs:
           else
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
+
+      - name: Build
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          go build -ldflags "-X main.Version=${VERSION}" -o cross-notifier .
 
       - name: Package
         run: |
@@ -110,7 +111,8 @@ jobs:
           CGO_ENABLED: 1
           MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
-          go build -o cross-notifier .
+          VERSION=${{ steps.version.outputs.version }}
+          go build -ldflags "-X main.Version=${VERSION}" -o cross-notifier .
 
       - name: Create app bundle
         run: |
@@ -204,7 +206,8 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          go build -ldflags="-H windowsgui" -o cross-notifier.exe .
+          VERSION=${{ steps.version.outputs.version }}
+          go build -ldflags="-H windowsgui -X main.Version=${VERSION}" -o cross-notifier.exe .
 
       - name: Package
         shell: bash
