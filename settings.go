@@ -53,6 +53,9 @@ var statusOptions = []string{"Any Status", "info", "success", "warning", "error"
 // Sound options (No Sound + built-in sounds)
 var soundOptions = append([]string{"No Sound"}, BuiltinSounds...)
 
+// ruleCardWidth is the width of a notification rule card
+const ruleCardWidth = 680
+
 // ShowSettingsWindow displays a configuration window and blocks until the user
 // saves or cancels. Returns the configuration values entered.
 // The isConnected function is called with server URL to check connection status.
@@ -392,7 +395,7 @@ func renderRuleRow(state *settingsState, index int, toDelete, toMoveUp, toMoveDo
 	// Card background with rounded corners
 	cardBg := color.RGBA{R: 45, G: 45, B: 50, A: 255}
 	g.Style().SetColor(g.StyleColorChildBg, cardBg).SetStyleFloat(g.StyleVarChildRounding, 8).To(
-		g.Child().Size(660, 85).Layout(
+		g.Child().Size(ruleCardWidth, 85).Layout(
 			// Row 1: Filters
 			g.Row(
 				g.Label("If:"),
