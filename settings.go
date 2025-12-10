@@ -44,7 +44,7 @@ type notificationRuleEntry struct {
 	statusIdx int32  // 0 = Any, 1+ = status index + 1
 	pattern   string // regex pattern
 	soundIdx  int32  // 0 = None, 1+ = built-in sounds
-	suppress  bool   // if true, don't show notification
+	actionIdx int32  // 0 = Normal, 1 = Silent, 2 = Dismiss
 }
 
 // Status options for notification rules
@@ -52,6 +52,9 @@ var statusOptions = []string{"Any Status", "info", "success", "warning", "error"
 
 // Sound options (No Sound + built-in sounds)
 var soundOptions = append([]string{"No Sound"}, BuiltinSounds...)
+
+// Action options for notification rules
+var actionOptions = []string{"Normal", "Silent", "Dismiss"}
 
 // ruleCardWidth is the width of a notification rule card
 const ruleCardWidth = 680
@@ -277,9 +280,18 @@ func stateToConfig(state *settingsState) *Config {
 // ruleToEntry converts a NotificationRule to editable entry state.
 func ruleToEntry(rule NotificationRule, servers []Server) notificationRuleEntry {
 	entry := notificationRuleEntry{
-		pattern:  rule.Pattern,
-		source:   rule.Source,
-		suppress: rule.Suppress,
+		pattern: rule.Pattern,
+		source:  rule.Source,
+	}
+
+	// Convert action to index
+	switch rule.EffectiveAction() {
+	case RuleActionNormal:
+		entry.actionIdx = 0
+	case RuleActionSilent:
+		entry.actionIdx = 1
+	case RuleActionDismiss:
+		entry.actionIdx = 2
 	}
 
 	// Find server index (0 = Any)
@@ -328,9 +340,18 @@ func ruleToEntry(rule NotificationRule, servers []Server) notificationRuleEntry 
 // entryToRule converts an editable entry back to a NotificationRule.
 func entryToRule(entry notificationRuleEntry, servers []serverEntry) NotificationRule {
 	rule := NotificationRule{
-		Pattern:  entry.pattern,
-		Source:   entry.source,
-		Suppress: entry.suppress,
+		Pattern: entry.pattern,
+		Source:  entry.source,
+	}
+
+	// Convert action index to RuleAction
+	switch entry.actionIdx {
+	case 0:
+		rule.Action = RuleActionNormal
+	case 1:
+		rule.Action = RuleActionSilent
+	case 2:
+		rule.Action = RuleActionDismiss
 	}
 
 	// Server
@@ -423,10 +444,11 @@ func renderRuleRow(state *settingsState, index int, toDelete, toMoveUp, toMoveDo
 			// Row 2: Actions
 			g.Row(
 				g.Label("Then:"),
-				g.Checkbox(fmt.Sprintf("Suppress##suppress%d", index), &rule.suppress),
+				g.Combo(fmt.Sprintf("##action%d", index), actionOptions[rule.actionIdx], actionOptions, &rule.actionIdx).Size(80),
 				g.Custom(func() {
-					if rule.suppress {
-						return // Don't show sound options if suppressed
+					// Only show sound options for Normal action
+					if rule.actionIdx != 0 {
+						return
 					}
 					g.Label("Sound:").Build()
 					g.SameLine()

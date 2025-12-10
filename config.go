@@ -16,6 +16,15 @@ type Server struct {
 	Label  string `json:"label,omitempty"` // optional display name for the server
 }
 
+// RuleAction defines how a notification should be handled.
+type RuleAction string
+
+const (
+	RuleActionNormal  RuleAction = "normal"  // Show popup + sound + add to center
+	RuleActionSilent  RuleAction = "silent"  // Add to center only (no popup, no sound)
+	RuleActionDismiss RuleAction = "dismiss" // Don't show at all
+)
+
 // NotificationRule defines conditions and actions for matching notifications.
 type NotificationRule struct {
 	// Filters (all must match, empty = any)
@@ -25,8 +34,23 @@ type NotificationRule struct {
 	Pattern string `json:"pattern,omitempty"` // regex on title+message
 
 	// Actions
-	Sound    string `json:"sound,omitempty"`    // sound to play (empty = no sound)
-	Suppress bool   `json:"suppress,omitempty"` // if true, don't show notification
+	Sound  string     `json:"sound,omitempty"`  // sound to play (empty = no sound)
+	Action RuleAction `json:"action,omitempty"` // normal, silent, or dismiss (default: normal)
+
+	// Deprecated: use Action = "dismiss" instead
+	Suppress bool `json:"suppress,omitempty"`
+}
+
+// EffectiveAction returns the action to take, handling backward compatibility.
+func (r *NotificationRule) EffectiveAction() RuleAction {
+	// Backward compatibility: Suppress = true maps to dismiss
+	if r.Suppress {
+		return RuleActionDismiss
+	}
+	if r.Action == "" {
+		return RuleActionNormal
+	}
+	return r.Action
 }
 
 // RulesConfig holds notification rule settings.

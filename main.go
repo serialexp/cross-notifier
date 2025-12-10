@@ -124,32 +124,44 @@ func updateRulesConfig(cfg RulesConfig) {
 }
 
 func addNotification(n Notification) {
-	// Check rules for sound and suppression
+	// Check rules for action and sound
 	rulesConfigMu.RLock()
 	rulesCfg := currentRulesConfig
 	rulesConfigMu.RUnlock()
 
+	action := RuleActionNormal
+	var soundToPlay string
+
 	rule := MatchRule(n, rulesCfg)
 	if rule != nil {
-		if rule.Suppress {
-			return // Don't show this notification (dismiss rule)
-		}
-		if rule.Sound != "" {
-			PlaySound(rule.Sound)
-		}
+		action = rule.EffectiveAction()
+		soundToPlay = rule.Sound
 	}
 
-	// Store to notification center (if store is initialized)
-	// The store assigns the ID which we use for both store and popup
+	// Handle dismiss action - don't store, don't show
+	if action == RuleActionDismiss {
+		return
+	}
+
+	// Store to notification center (for normal and silent actions)
 	var storeID int64
 	if notificationStore != nil {
-		// Serialize notification for storage
 		rawJSON, err := json.Marshal(n)
 		if err != nil {
 			log.Printf("Failed to serialize notification: %v", err)
 		} else {
 			storeID = notificationStore.Add(n, rawJSON)
 		}
+	}
+
+	// Silent action: stored to center but no popup or sound
+	if action == RuleActionSilent {
+		return
+	}
+
+	// Normal action: play sound and show popup
+	if soundToPlay != "" {
+		PlaySound(soundToPlay)
 	}
 
 	notifMu.Lock()
