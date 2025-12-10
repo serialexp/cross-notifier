@@ -512,11 +512,16 @@ func main() {
 
 	http.HandleFunc("/notify", server.HandleNotify)
 	http.HandleFunc("/ws", server.HandleWebSocket)
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 
 	addr := ":" + *port
 	log.Printf("Notification server listening on %s", addr)
 	log.Printf("  POST /notify - send notifications (requires auth)")
 	log.Printf("  GET  /ws     - WebSocket for clients (requires auth)")
+	log.Printf("  GET  /health - health check (no auth)")
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
