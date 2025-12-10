@@ -111,6 +111,9 @@ var (
 	// Rules configuration (updated when config loads/reloads)
 	currentRulesConfig RulesConfig
 	rulesConfigMu      sync.RWMutex
+
+	// Notification center store
+	notificationStore *NotificationStore
 )
 
 // updateRulesConfig updates the global rules configuration.
@@ -129,18 +132,36 @@ func addNotification(n Notification) {
 	rule := MatchRule(n, rulesCfg)
 	if rule != nil {
 		if rule.Suppress {
-			return // Don't show this notification
+			return // Don't show this notification (dismiss rule)
 		}
 		if rule.Sound != "" {
 			PlaySound(rule.Sound)
 		}
 	}
 
+	// Store to notification center (if store is initialized)
+	// The store assigns the ID which we use for both store and popup
+	var storeID int64
+	if notificationStore != nil {
+		// Serialize notification for storage
+		rawJSON, err := json.Marshal(n)
+		if err != nil {
+			log.Printf("Failed to serialize notification: %v", err)
+		} else {
+			storeID = notificationStore.Add(n, rawJSON)
+		}
+	}
+
 	notifMu.Lock()
 	defer notifMu.Unlock()
 
-	n.ID = nextID
-	nextID++
+	// Use store ID if available, otherwise fall back to local counter
+	if storeID > 0 {
+		n.ID = storeID
+	} else {
+		n.ID = nextID
+		nextID++
+	}
 	n.CreatedAt = time.Now()
 
 	// Track server ID -> local ID mapping for exclusive notifications
@@ -174,6 +195,11 @@ func addNotification(n Notification) {
 }
 
 func dismissNotification(id int64) {
+	// Remove from notification center store
+	if notificationStore != nil {
+		notificationStore.Remove(id)
+	}
+
 	notifMu.Lock()
 	defer notifMu.Unlock()
 
@@ -394,9 +420,114 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(status)
 }
 
+// centerListHandler returns all notifications in the center.
+func centerListHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if notificationStore == nil {
+		http.Error(w, "store not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	stored := notificationStore.List()
+
+	// Parse notifications for JSON response
+	result := make([]map[string]any, 0, len(stored))
+	for _, s := range stored {
+		n, err := s.ParseNotification()
+		if err != nil {
+			continue
+		}
+		result = append(result, map[string]any{
+			"id":        s.ID,
+			"title":     n.Title,
+			"message":   n.Message,
+			"status":    n.Status,
+			"source":    n.Source,
+			"actions":   n.Actions,
+			"iconData":  n.IconData,
+			"createdAt": s.CreatedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+// centerDismissHandler handles dismissing notifications from the center.
+// DELETE /center/{id} - dismiss single notification
+// DELETE /center?confirm=true - dismiss all
+func centerDismissHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "DELETE required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if notificationStore == nil {
+		http.Error(w, "store not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Check for specific ID in path: /center/123
+	path := r.URL.Path
+	if len(path) > len("/center/") {
+		idStr := path[len("/center/"):]
+		var id int64
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+			http.Error(w, "invalid ID", http.StatusBadRequest)
+			return
+		}
+
+		if notificationStore.Remove(id) {
+			// Also dismiss from popup if visible
+			dismissNotification(id)
+			w.WriteHeader(http.StatusOK)
+		} else {
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+		return
+	}
+
+	// Dismiss all requires confirmation
+	if r.URL.Query().Get("confirm") != "true" {
+		http.Error(w, "confirm=true required to dismiss all", http.StatusBadRequest)
+		return
+	}
+
+	// Dismiss all from popup display
+	for _, s := range notificationStore.List() {
+		dismissNotification(s.ID)
+	}
+
+	notificationStore.Clear()
+	w.WriteHeader(http.StatusOK)
+}
+
+// centerCountHandler returns just the count of notifications.
+func centerCountHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if notificationStore == nil {
+		http.Error(w, "store not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int{"count": notificationStore.Count()})
+}
+
 func startHTTPServer(port string) {
 	http.HandleFunc("/notify", httpHandler)
 	http.HandleFunc("/status", statusHandler)
+	http.HandleFunc("/center", centerListHandler)
+	http.HandleFunc("/center/", centerDismissHandler)
+	http.HandleFunc("/center/count", centerCountHandler)
 	addr := ":" + port
 	log.Printf("Listening on http://localhost%s/notify", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
@@ -541,6 +672,19 @@ func renderStackedNotification(n Notification, index int, total int) {
 		if n.Title != "" {
 			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.titleText)
 			imgui.TextWrapped(n.Title)
+			imgui.PopStyleColor()
+		}
+
+		// Dismiss button (only for notifications with actions)
+		if len(n.Actions) > 0 {
+			imgui.SameLine()
+			imgui.SetCursorPosX(cardWidth - 25)
+			imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.5, Y: 0.3, Z: 0.3, W: 0.5})
+			imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.7, Y: 0.3, Z: 0.3, W: 0.8})
+			if imgui.SmallButton(fmt.Sprintf("x##%d", id)) {
+				go dismissNotification(id)
+			}
+			imgui.PopStyleColor()
 			imgui.PopStyleColor()
 		}
 
@@ -785,6 +929,23 @@ func launchSettingsProcess(port string) {
 	// Don't wait - let it run independently
 }
 
+// launchCenterProcess starts the notification center window as a separate process.
+func launchCenterProcess(port string) {
+	execPath, err := os.Executable()
+	if err != nil {
+		log.Printf("Failed to get executable path: %v", err)
+		return
+	}
+
+	cmd := exec.Command(execPath, "-center")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), fmt.Sprintf("CROSS_NOTIFIER_DAEMON_PORT=%s", port))
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to start notification center: %v", err)
+	}
+}
+
 // getConnectedClient returns any connected server client for sending actions.
 func getConnectedClient() *NotificationClient {
 	serverClientsMu.RLock()
@@ -994,24 +1155,43 @@ func watchConfig(currentCfg *Config) {
 
 func runDaemon(port string, cfg *Config) {
 	// Start system tray
-	StartTray(func() {
-		launchSettingsProcess(port)
-	}, func() int {
-		// Return number of connected servers
-		serverClientsMu.RLock()
-		defer serverClientsMu.RUnlock()
+	StartTray(
+		func() {
+			launchSettingsProcess(port)
+		},
+		func() {
+			launchCenterProcess(port)
+		},
+		func() int {
+			// Return number of connected servers
+			serverClientsMu.RLock()
+			defer serverClientsMu.RUnlock()
 
-		count := 0
-		for _, client := range serverClients {
-			if client.IsConnected() {
-				count++
+			count := 0
+			for _, client := range serverClients {
+				if client.IsConnected() {
+					count++
+				}
 			}
-		}
-		return count
-	})
+			return count
+		},
+		func() int {
+			// Return number of notifications in center
+			if notificationStore == nil {
+				return 0
+			}
+			return notificationStore.Count()
+		},
+	)
 
 	// Initialize rules configuration
 	updateRulesConfig(cfg.Rules)
+
+	// Initialize notification store
+	notificationStore = NewNotificationStore(DefaultStorePath())
+	if err := notificationStore.Load(); err != nil {
+		log.Printf("Warning: failed to load notification store: %v", err)
+	}
 
 	// Start local HTTP server in background
 	go startHTTPServer(port)
@@ -1050,6 +1230,7 @@ func main() {
 	secret := flag.String("secret", "", "Shared secret for authentication (or CROSS_NOTIFIER_SECRET env)")
 	name := flag.String("name", "", "Client display name for identification (or CROSS_NOTIFIER_NAME env)")
 	setup := flag.Bool("setup", false, "Open settings window")
+	center := flag.Bool("center", false, "Open notification center window")
 
 	flag.Parse()
 
@@ -1129,6 +1310,17 @@ func main() {
 		}
 
 		// -setup flag just saves and exits (daemon is already running or will be started separately)
+		return
+	}
+
+	// Open notification center window if requested
+	if *center {
+		daemonPort := os.Getenv("CROSS_NOTIFIER_DAEMON_PORT")
+		if daemonPort == "" {
+			daemonPort = *port
+		}
+
+		ShowCenterWindow(daemonPort)
 		return
 	}
 

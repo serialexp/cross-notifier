@@ -1,5 +1,5 @@
 // ABOUTME: System tray icon for easy access to settings and app control.
-// ABOUTME: Provides menu items for Settings and Quit.
+// ABOUTME: Provides menu items for Notifications, Settings, and Quit.
 
 package main
 
@@ -21,10 +21,13 @@ var (
 
 // StartTray initializes the system tray for use with an external event loop.
 // Call this before starting the main GUI loop (giu).
-// The onSettings callback is called when user clicks Settings menu item.
-// The getConnectionCount callback returns the number of connected servers.
-func StartTray(onSettings func(), getConnectionCount func() int) {
-	var mStatus, mSettings, mQuit *systray.MenuItem
+// Callbacks:
+// - onSettings: called when user clicks Settings menu item
+// - onNotifications: called when user clicks Notifications menu item
+// - getConnectionCount: returns the number of connected servers
+// - getNotificationCount: returns the number of notifications in the center
+func StartTray(onSettings func(), onNotifications func(), getConnectionCount func() int, getNotificationCount func() int) {
+	var mStatus, mNotifications, mSettings, mQuit *systray.MenuItem
 
 	start, end := systray.RunWithExternalLoop(func() {
 		// onReady - called after nativeStart()
@@ -34,11 +37,12 @@ func StartTray(onSettings func(), getConnectionCount func() int) {
 		mStatus = systray.AddMenuItem("Not connected", "Server connection status")
 		mStatus.Disable()
 		systray.AddSeparator()
+		mNotifications = systray.AddMenuItem("Notifications", "Open notification center")
 		mSettings = systray.AddMenuItem("Settings...", "Open settings window")
 		systray.AddSeparator()
 		mQuit = systray.AddMenuItem("Quit", "Quit cross-notifier")
 
-		// Update status periodically
+		// Update status and notification count periodically
 		go func() {
 			for {
 				if getConnectionCount != nil {
@@ -51,6 +55,14 @@ func StartTray(onSettings func(), getConnectionCount func() int) {
 						mStatus.SetTitle(fmt.Sprintf("Connected to %d servers", count))
 					}
 				}
+				if getNotificationCount != nil {
+					count := getNotificationCount()
+					if count == 0 {
+						mNotifications.SetTitle("Notifications")
+					} else {
+						mNotifications.SetTitle(fmt.Sprintf("Notifications (%d)", count))
+					}
+				}
 				time.Sleep(2 * time.Second)
 			}
 		}()
@@ -59,6 +71,10 @@ func StartTray(onSettings func(), getConnectionCount func() int) {
 		go func() {
 			for {
 				select {
+				case <-mNotifications.ClickedCh:
+					if onNotifications != nil {
+						onNotifications()
+					}
 				case <-mSettings.ClickedCh:
 					if onSettings != nil {
 						onSettings()
