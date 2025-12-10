@@ -1,18 +1,62 @@
 // ABOUTME: Sound matching and playback for notification sounds.
-// ABOUTME: Uses beep library for cross-platform tone generation.
+// ABOUTME: Supports embedded wav files and generated tones via beep library.
 
 package main
 
 import (
+	"bytes"
+	_ "embed"
 	"log"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gopxl/beep/v2"
 	"github.com/gopxl/beep/v2/generators"
 	"github.com/gopxl/beep/v2/speaker"
+	"github.com/gopxl/beep/v2/wav"
 )
+
+//go:embed sounds/mixkit-bell-notification-933.wav
+var soundBell []byte
+
+//go:embed sounds/mixkit-confirmation-tone-2867.wav
+var soundConfirmation []byte
+
+//go:embed sounds/mixkit-correct-answer-tone-2870.wav
+var soundCorrect []byte
+
+//go:embed sounds/mixkit-digital-quick-tone-2866.wav
+var soundDigital []byte
+
+//go:embed sounds/mixkit-happy-bells-notification-937.wav
+var soundHappyBells []byte
+
+//go:embed sounds/mixkit-arabian-mystery-harp-notification-2489.wav
+var soundHarp []byte
+
+//go:embed sounds/mixkit-long-pop-2358.wav
+var soundPop []byte
+
+//go:embed sounds/mixkit-positive-notification-951.wav
+var soundPositive []byte
+
+//go:embed sounds/mixkit-software-interface-start-2574.wav
+var soundInterface []byte
+
+// builtinWavSounds maps friendly sound names to embedded wav data.
+var builtinWavSounds = map[string][]byte{
+	"Bell":         soundBell,
+	"Confirmation": soundConfirmation,
+	"Correct":      soundCorrect,
+	"Digital":      soundDigital,
+	"Happy Bells":  soundHappyBells,
+	"Harp":         soundHarp,
+	"Pop":          soundPop,
+	"Positive":     soundPositive,
+	"Interface":    soundInterface,
+}
 
 // Tone defines a generated sound with frequency and duration.
 type Tone struct {
@@ -20,8 +64,8 @@ type Tone struct {
 	Duration  time.Duration
 }
 
-// builtinTones maps sound names to tone parameters.
-var builtinTones = map[string]Tone{
+// generatedTones maps sound names to tone parameters (prefixed with "tone:" when used).
+var generatedTones = map[string]Tone{
 	"ping":   {Frequency: 880, Duration: 100 * time.Millisecond},
 	"alert":  {Frequency: 440, Duration: 200 * time.Millisecond},
 	"low":    {Frequency: 220, Duration: 200 * time.Millisecond},
@@ -30,8 +74,12 @@ var builtinTones = map[string]Tone{
 	"notify": {Frequency: 587, Duration: 120 * time.Millisecond}, // D5
 }
 
-// BuiltinSounds lists available sound names.
-var BuiltinSounds = []string{"ping", "alert", "low", "chime", "beep", "notify"}
+// BuiltinSounds lists available sound names (wav sounds first, then generated tones).
+var BuiltinSounds = []string{
+	"Bell", "Confirmation", "Correct", "Digital", "Happy Bells",
+	"Harp", "Pop", "Positive", "Interface",
+	"tone:ping", "tone:alert", "tone:low", "tone:chime", "tone:beep", "tone:notify",
+}
 
 const sampleRate = beep.SampleRate(44100)
 
@@ -108,20 +156,60 @@ func matchesRule(n Notification, rule NotificationRule) bool {
 }
 
 // PlaySound plays the specified sound asynchronously.
-// name should be one of the built-in sound names.
+// name can be a wav sound name, or a generated tone prefixed with "tone:".
 func PlaySound(name string) {
 	if name == "" || name == "none" {
 		return
 	}
 
-	tone, ok := builtinTones[name]
-	if !ok {
-		log.Printf("Unknown sound: %s", name)
+	if err := initSpeaker(); err != nil {
+		log.Printf("Failed to initialize speaker: %v", err)
 		return
 	}
 
-	if err := initSpeaker(); err != nil {
-		log.Printf("Failed to initialize speaker: %v", err)
+	// Check for generated tone (prefixed with "tone:")
+	if strings.HasPrefix(name, "tone:") {
+		toneName := strings.TrimPrefix(name, "tone:")
+		playGeneratedTone(toneName)
+		return
+	}
+
+	// Check for wav sound
+	if wavData, ok := builtinWavSounds[name]; ok {
+		playWavSound(wavData)
+		return
+	}
+
+	log.Printf("Unknown sound: %s", name)
+}
+
+// playWavSound plays embedded wav data.
+func playWavSound(data []byte) {
+	reader := bytes.NewReader(data)
+	streamer, format, err := wav.Decode(reader)
+	if err != nil {
+		log.Printf("Failed to decode wav: %v", err)
+		return
+	}
+
+	// Resample if needed to match speaker sample rate
+	if format.SampleRate != sampleRate {
+		resampled := beep.Resample(4, format.SampleRate, sampleRate, streamer)
+		speaker.Play(beep.Seq(resampled, beep.Callback(func() {
+			streamer.Close()
+		})))
+	} else {
+		speaker.Play(beep.Seq(streamer, beep.Callback(func() {
+			streamer.Close()
+		})))
+	}
+}
+
+// playGeneratedTone plays a generated sine wave tone.
+func playGeneratedTone(name string) {
+	tone, ok := generatedTones[name]
+	if !ok {
+		log.Printf("Unknown generated tone: %s", name)
 		return
 	}
 
@@ -133,12 +221,20 @@ func PlaySound(name string) {
 
 	// Limit to the specified duration
 	limited := beep.Take(sampleRate.N(tone.Duration), streamer)
-
 	speaker.Play(limited)
 }
 
 // IsBuiltinSound returns true if the name is a known built-in sound.
 func IsBuiltinSound(name string) bool {
-	_, ok := builtinTones[name]
-	return ok
+	// Check wav sounds
+	if _, ok := builtinWavSounds[name]; ok {
+		return true
+	}
+	// Check generated tones (with "tone:" prefix)
+	if strings.HasPrefix(name, "tone:") {
+		toneName := strings.TrimPrefix(name, "tone:")
+		_, ok := generatedTones[toneName]
+		return ok
+	}
+	return false
 }
