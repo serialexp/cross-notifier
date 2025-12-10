@@ -29,22 +29,31 @@ type NotificationClient struct {
 	MinReconnectDelay time.Duration
 	MaxReconnectDelay time.Duration
 
+	// Grace period for quick reconnects (no notifications shown if reconnect within this time)
+	ReconnectGracePeriod time.Duration
+
 	conn      *websocket.Conn
 	mu        sync.RWMutex
 	closed    bool
 	closeChan chan struct{}
+
+	// Track disconnect time for grace period
+	disconnectTime  time.Time
+	disconnectTimer *time.Timer
+	wasConnected    bool // track if we were ever connected (to avoid disconnect notification on initial connect failure)
 }
 
 // NewNotificationClient creates a new client that connects to the given server.
 func NewNotificationClient(serverURL, secret, name string, onNotify func(Notification)) *NotificationClient {
 	return &NotificationClient{
-		serverURL:         serverURL,
-		secret:            secret,
-		name:              name,
-		onNotify:          onNotify,
-		MinReconnectDelay: time.Second,
-		MaxReconnectDelay: 30 * time.Second,
-		closeChan:         make(chan struct{}),
+		serverURL:            serverURL,
+		secret:               secret,
+		name:                 name,
+		onNotify:             onNotify,
+		MinReconnectDelay:    time.Second,
+		MaxReconnectDelay:    30 * time.Second,
+		ReconnectGracePeriod: 2 * time.Second,
+		closeChan:            make(chan struct{}),
 	}
 }
 
@@ -55,6 +64,16 @@ func (c *NotificationClient) Connect() error {
 		c.mu.Unlock()
 		return nil
 	}
+
+	// Cancel any pending disconnect notification
+	if c.disconnectTimer != nil {
+		c.disconnectTimer.Stop()
+		c.disconnectTimer = nil
+	}
+
+	// Check if this is a quick reconnect (within grace period)
+	quickReconnect := !c.disconnectTime.IsZero() && time.Since(c.disconnectTime) < c.ReconnectGracePeriod
+
 	c.mu.Unlock()
 
 	header := http.Header{}
@@ -70,9 +89,16 @@ func (c *NotificationClient) Connect() error {
 
 	c.mu.Lock()
 	c.conn = conn
+	c.disconnectTime = time.Time{} // Clear disconnect time on successful connect
+	isInitialConnect := !c.wasConnected
+	c.wasConnected = true
 	c.mu.Unlock()
 
-	if c.OnConnect != nil {
+	// Show connect notification:
+	// - On initial connect (user wants to know connection succeeded)
+	// - On slow reconnect (after grace period, disconnect notification was shown)
+	// Skip notification only on quick reconnect (silent recovery)
+	if c.OnConnect != nil && (isInitialConnect || !quickReconnect) {
 		c.OnConnect()
 	}
 
@@ -89,11 +115,19 @@ func (c *NotificationClient) readLoop() {
 			c.conn = nil
 		}
 		closed := c.closed
-		c.mu.Unlock()
+		c.disconnectTime = time.Now()
 
-		if c.OnDisconnect != nil {
-			c.OnDisconnect()
+		// Schedule disconnect notification after grace period
+		// (will be cancelled if we reconnect quickly)
+		if c.OnDisconnect != nil && !closed {
+			c.disconnectTimer = time.AfterFunc(c.ReconnectGracePeriod, func() {
+				c.mu.Lock()
+				c.disconnectTimer = nil
+				c.mu.Unlock()
+				c.OnDisconnect()
+			})
 		}
+		c.mu.Unlock()
 
 		// Attempt reconnection if not intentionally closed
 		if !closed {
@@ -148,7 +182,7 @@ func (c *NotificationClient) readLoop() {
 
 // reconnectLoop attempts to reconnect with exponential backoff.
 func (c *NotificationClient) reconnectLoop() {
-	delay := c.MinReconnectDelay
+	delay := time.Duration(0) // Try immediately first
 
 	for {
 		c.mu.RLock()
@@ -159,28 +193,35 @@ func (c *NotificationClient) reconnectLoop() {
 			return
 		}
 
-		select {
-		case <-c.closeChan:
-			return
-		case <-time.After(delay):
-		}
+		// Wait before reconnecting (0 on first attempt)
+		if delay > 0 {
+			select {
+			case <-c.closeChan:
+				return
+			case <-time.After(delay):
+			}
 
-		c.mu.RLock()
-		closed = c.closed
-		c.mu.RUnlock()
+			c.mu.RLock()
+			closed = c.closed
+			c.mu.RUnlock()
 
-		if closed {
-			return
+			if closed {
+				return
+			}
 		}
 
 		log.Printf("Attempting to reconnect to %s...", c.serverURL)
 
 		if err := c.Connect(); err != nil {
 			log.Printf("Reconnection failed: %v", err)
-			// Exponential backoff
-			delay *= 2
-			if delay > c.MaxReconnectDelay {
-				delay = c.MaxReconnectDelay
+			// Exponential backoff starting from MinReconnectDelay
+			if delay == 0 {
+				delay = c.MinReconnectDelay
+			} else {
+				delay *= 2
+				if delay > c.MaxReconnectDelay {
+					delay = c.MaxReconnectDelay
+				}
 			}
 			continue
 		}
@@ -197,6 +238,11 @@ func (c *NotificationClient) Close() {
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
+	}
+	// Cancel any pending disconnect notification
+	if c.disconnectTimer != nil {
+		c.disconnectTimer.Stop()
+		c.disconnectTimer = nil
 	}
 	c.mu.Unlock()
 
