@@ -18,3 +18,4 @@ Icon.icns
 
 # Claude Code local settings
 .claude/settings.local.json
+.env

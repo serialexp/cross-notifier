@@ -45,9 +45,13 @@ docker:
 docker-local:
     depot build --platform linux/amd64 -t cross-notifier-server --load .
 
-# Send test notifications in parallel (default 10)
+# Send test notifications locally (default 10, ignores .env)
 stress count="10":
-    ./test-notify.sh "Stress Test" "Message" "" {{count}}
+    CROSS_NOTIFIER_SERVER=http://localhost:9876 CROSS_NOTIFIER_SECRET= ./test-notify.sh {{count}}
+
+# Send test notifications to remote server (uses .env for CROSS_NOTIFIER_SERVER and CROSS_NOTIFIER_SECRET)
+stress-remote count="10":
+    ./test-notify.sh {{count}}
 
 # Clean build artifacts
 clean:
