@@ -23,10 +23,12 @@ type SettingsResult struct {
 
 // settingsState holds the editable state for the settings window.
 type settingsState struct {
-	name         string
-	servers      []serverEntry
-	rulesEnabled bool
-	rules        []notificationRuleEntry
+	name             string
+	servers          []serverEntry
+	rulesEnabled     bool
+	rules            []notificationRuleEntry
+	autostartEnabled bool
+	autostartInitial bool // track initial state to detect changes
 }
 
 // serverEntry holds editable fields for a single server.
@@ -67,7 +69,10 @@ func ShowSettingsWindow(initial *Config, isConnected func(url string) bool) Sett
 	done := false
 
 	// Initialize state from config
-	state := &settingsState{}
+	state := &settingsState{
+		autostartEnabled: IsAutostartInstalled(),
+		autostartInitial: IsAutostartInstalled(),
+	}
 	if initial != nil {
 		state.name = initial.Name
 		for _, s := range initial.Servers {
@@ -189,16 +194,40 @@ func ShowSettingsWindow(initial *Config, isConnected func(url string) bool) Sett
 			g.Separator(),
 			g.Spacing(),
 
+			// Auto-start section
+			g.Label("Startup:"),
+			g.Spacing(),
+			g.Checkbox("Start automatically on login", &state.autostartEnabled),
+			g.Spacing(),
+			g.Separator(),
+			g.Spacing(),
+
 			// Action buttons
 			g.Row(
 				g.Button("Save").Size(100, 30).OnClick(func() {
 					result.Config = stateToConfig(state)
 					result.Cancelled = false
+					// Apply autostart change if needed
+					if state.autostartEnabled != state.autostartInitial {
+						if state.autostartEnabled {
+							_ = InstallAutostart()
+						} else {
+							_ = UninstallAutostart()
+						}
+					}
 					done = true
 				}),
 				g.Button("Local Only").Size(100, 30).OnClick(func() {
 					result.Config = &Config{Name: state.name}
 					result.Cancelled = false
+					// Apply autostart change if needed
+					if state.autostartEnabled != state.autostartInitial {
+						if state.autostartEnabled {
+							_ = InstallAutostart()
+						} else {
+							_ = UninstallAutostart()
+						}
+					}
 					done = true
 				}),
 				g.Button("Cancel").Size(100, 30).OnClick(func() {

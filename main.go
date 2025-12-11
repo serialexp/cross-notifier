@@ -598,6 +598,77 @@ func loop() {
 	imgui.PopStyleVar()
 }
 
+// truncateToWidth truncates text to fit within maxWidth, adding ellipsis if needed.
+func truncateToWidth(text string, maxWidth float32) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	size := imgui.CalcTextSize(text)
+	if size.X <= maxWidth {
+		return text
+	}
+
+	ellipsis := "..."
+	ellipsisWidth := imgui.CalcTextSize(ellipsis).X
+	targetWidth := maxWidth - ellipsisWidth
+
+	// Binary search for the right length
+	runes := []rune(text)
+	low, high := 0, len(runes)
+	for low < high {
+		mid := (low + high + 1) / 2
+		testStr := string(runes[:mid])
+		if imgui.CalcTextSize(testStr).X <= targetWidth {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+
+	if low == 0 {
+		return ellipsis
+	}
+	return string(runes[:low]) + ellipsis
+}
+
+// truncateToLines truncates text to fit within maxWidth and maxLines.
+func truncateToLines(text string, maxWidth float32, maxLines int) string {
+	if maxWidth <= 0 || maxLines <= 0 {
+		return ""
+	}
+
+	lineHeight := imgui.CurrentStyle().ItemSpacing().Y + imgui.CalcTextSize("A").Y
+	maxHeight := lineHeight * float32(maxLines)
+
+	// Check if it fits
+	size := imgui.CalcTextSizeV(text, false, maxWidth)
+	if size.Y <= maxHeight {
+		return text
+	}
+
+	// Need to truncate - find how much text fits
+	ellipsis := "..."
+	runes := []rune(text)
+
+	// Binary search for the right length
+	low, high := 0, len(runes)
+	for low < high {
+		mid := (low + high + 1) / 2
+		testStr := string(runes[:mid]) + ellipsis
+		size := imgui.CalcTextSizeV(testStr, false, maxWidth)
+		if size.Y <= maxHeight {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+
+	if low == 0 {
+		return ellipsis
+	}
+	return string(runes[:low]) + ellipsis
+}
+
 // statusBorderColor returns the border color for a notification based on its status.
 func statusBorderColor(status string) imgui.Vec4 {
 	switch status {
@@ -671,19 +742,25 @@ func renderStackedNotification(n Notification, index int, total int) {
 		textStartX := innerPadding
 
 		if tex != nil {
-			// Layout: icon on left (vertically centered), text on right
-			contentHeight := notificationH - padding
-			iconOffset := float32(contentHeight-iconSize) / 2
-			imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: iconOffset})
+			// Layout: icon on left at top, text on right
+			imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: innerPadding})
 			imgui.Image(tex.ID(), imgui.Vec2{X: iconSize, Y: iconSize})
 			textStartX = innerPadding + iconSize + innerPadding
 		}
 
-		// Title - position explicitly to avoid cursor issues from icon
+		// Calculate available text width (account for dismiss button if actions present)
+		dismissButtonWidth := float32(0)
+		if len(n.Actions) > 0 {
+			dismissButtonWidth = 20
+		}
+		textWidth := cardWidth - textStartX - innerPadding - dismissButtonWidth
+
+		// Title - single line, truncated
 		imgui.SetCursorPos(imgui.Vec2{X: textStartX, Y: innerPadding})
 		if n.Title != "" {
 			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.titleText)
-			imgui.TextWrapped(n.Title)
+			truncatedTitle := truncateToWidth(n.Title, textWidth)
+			imgui.Text(truncatedTitle)
 			imgui.PopStyleColor()
 		}
 
@@ -700,11 +777,12 @@ func renderStackedNotification(n Notification, index int, total int) {
 			imgui.PopStyleColor()
 		}
 
-		// Message
+		// Message - max 2 lines, truncated
 		if n.Message != "" {
 			imgui.SetCursorPosX(textStartX)
 			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.bodyText)
-			imgui.TextWrapped(n.Message)
+			truncatedMsg := truncateToLines(n.Message, textWidth+dismissButtonWidth, 2)
+			imgui.TextWrapped(truncatedMsg)
 			imgui.PopStyleColor()
 		}
 
@@ -738,8 +816,8 @@ func renderStackedNotification(n Notification, index int, total int) {
 func renderActionButtons(n Notification) {
 	const innerPadding float32 = 10
 
-	// Position at bottom of card
-	imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: float32(notificationH) - innerPadding - 20})
+	// Position at bottom of content area (before action row)
+	imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: float32(notificationH) - innerPadding - 4})
 
 	for i, action := range n.Actions {
 		if i > 0 {
@@ -1243,8 +1321,26 @@ func main() {
 	name := flag.String("name", "", "Client display name for identification (or CROSS_NOTIFIER_NAME env)")
 	setup := flag.Bool("setup", false, "Open settings window")
 	center := flag.Bool("center", false, "Open notification center window")
+	installAutostart := flag.Bool("install-autostart", false, "Enable auto-start on login")
+	uninstallAutostart := flag.Bool("uninstall-autostart", false, "Disable auto-start on login")
 
 	flag.Parse()
+
+	// Handle autostart commands
+	if *installAutostart {
+		if err := InstallAutostart(); err != nil {
+			log.Fatalf("Failed to enable auto-start: %v", err)
+		}
+		fmt.Println("Auto-start enabled. CrossNotifier will start automatically on login.")
+		return
+	}
+	if *uninstallAutostart {
+		if err := UninstallAutostart(); err != nil {
+			log.Fatalf("Failed to disable auto-start: %v", err)
+		}
+		fmt.Println("Auto-start disabled. CrossNotifier will no longer start automatically.")
+		return
+	}
 
 	// Environment variables as fallbacks
 	if *port == defaultPort {

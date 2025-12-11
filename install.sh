@@ -30,6 +30,22 @@ info() { echo -e "${GREEN}==>${NC} $1"; }
 warn() { echo -e "${YELLOW}warning:${NC} $1"; }
 error() { echo -e "${RED}error:${NC} $1" >&2; exit 1; }
 
+# Enable auto-start using the binary's built-in support
+enable_autostart() {
+    local bin_path="$1"
+
+    info "Enabling auto-start..."
+    if "$bin_path" -install-autostart; then
+        info "Auto-start enabled!"
+        echo ""
+        echo "  Manage auto-start with:"
+        echo "    ${bin_path} -uninstall-autostart  # Disable auto-start"
+    else
+        warn "Failed to enable auto-start. You can try manually with:"
+        echo "    ${bin_path} -install-autostart"
+    fi
+}
+
 # Detect OS and architecture
 detect_platform() {
     local os arch
@@ -125,37 +141,19 @@ EOF
         update-desktop-database "$desktop_dir" 2>/dev/null || true
     fi
 
-    # Create systemd service file (always, so users can enable it later)
-    local service_dir="${HOME}/.config/systemd/user"
-    mkdir -p "$service_dir"
+    local bin_path="${bin_dir}/${APP_NAME}"
 
-    info "Creating systemd user service file..."
-    cat > "${service_dir}/${APP_NAME}.service" << EOF
-[Unit]
-Description=CrossNotifier - Desktop notification daemon
-After=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart=${bin_dir}/${APP_NAME}
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-
-    # Handle systemd service activation
+    # Handle auto-start activation
     if [[ "$ENABLE_SERVICE" == "true" ]]; then
         echo ""
-        enable_systemd_service
+        enable_autostart "$bin_path"
     elif [[ -t 0 ]]; then
         # Running interactively (not piped from curl)
         echo ""
         read -p "Would you like to enable ${DISPLAY_NAME} to start automatically on login? (y/N) " -n 1 -r
         echo ""
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            enable_systemd_service
+            enable_autostart "$bin_path"
         fi
     fi
 
@@ -163,7 +161,7 @@ EOF
 
     info "Installation complete!"
     echo ""
-    echo "  Binary installed to: ${bin_dir}/${APP_NAME}"
+    echo "  Binary installed to: ${bin_path}"
     echo "  Desktop entry: ${desktop_dir}/${APP_NAME}.desktop"
     echo ""
     echo "  Usage:"
@@ -175,11 +173,9 @@ EOF
     echo ""
 
     # If service not enabled, show instructions
-    if [[ "$ENABLE_SERVICE" != "true" ]] && ! systemctl --user is-enabled ${APP_NAME}.service &>/dev/null; then
+    if [[ "$ENABLE_SERVICE" != "true" ]]; then
         echo "  To enable auto-start on login, run:"
-        echo "    systemctl --user enable --now ${APP_NAME}.service"
-        echo ""
-        echo "  Or reinstall with: curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s -- --enable-service"
+        echo "    ${bin_path} -install-autostart"
         echo ""
     fi
 
@@ -187,27 +183,6 @@ EOF
     if [[ ":$PATH:" != *":${bin_dir}:"* ]]; then
         warn "${bin_dir} is not in your PATH"
         echo "  Add it with: export PATH=\"\$PATH:${bin_dir}\""
-    fi
-}
-
-# Enable systemd user service
-enable_systemd_service() {
-    # Reload systemd and enable service
-    info "Enabling systemd service..."
-    systemctl --user daemon-reload
-    systemctl --user enable ${APP_NAME}.service
-    systemctl --user start ${APP_NAME}.service
-
-    if systemctl --user is-active --quiet ${APP_NAME}.service; then
-        info "Service started successfully!"
-        echo ""
-        echo "  Manage the service with:"
-        echo "    systemctl --user status ${APP_NAME}   # Check status"
-        echo "    systemctl --user stop ${APP_NAME}     # Stop service"
-        echo "    systemctl --user restart ${APP_NAME}  # Restart service"
-        echo "    systemctl --user disable ${APP_NAME}  # Disable auto-start"
-    else
-        warn "Service failed to start. Check status with: systemctl --user status ${APP_NAME}"
     fi
 }
 
@@ -246,13 +221,37 @@ install_macos() {
 
     rm -rf "$tmp_dir"
 
+    local bin_path="/Applications/${DISPLAY_NAME}.app/Contents/MacOS/${APP_NAME}"
+
+    # Handle auto-start activation
+    if [[ "$ENABLE_SERVICE" == "true" ]]; then
+        echo ""
+        enable_autostart "$bin_path"
+    elif [[ -t 0 ]]; then
+        # Running interactively (not piped from curl)
+        echo ""
+        read -p "Would you like to enable ${DISPLAY_NAME} to start automatically on login? (y/N) " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            enable_autostart "$bin_path"
+        fi
+    fi
+
     info "Installation complete!"
     echo ""
     echo "  App installed to: ${app_path}"
     echo "  Launch from Applications or Spotlight"
     echo ""
     echo "  Or run from terminal:"
-    echo "    /Applications/${DISPLAY_NAME}.app/Contents/MacOS/${APP_NAME}"
+    echo "    ${bin_path}"
+    echo ""
+
+    # If service not enabled, show instructions
+    if [[ "$ENABLE_SERVICE" != "true" ]]; then
+        echo "  To enable auto-start on login, run:"
+        echo "    ${bin_path} -install-autostart"
+        echo ""
+    fi
 }
 
 # Install on Windows (basic support)
