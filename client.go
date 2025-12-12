@@ -13,6 +13,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	// PingInterval is how often to send WebSocket pings to keep ALB connections alive.
+	PingInterval = 30 * time.Second
+)
+
 // NotificationClient connects to a notification server and receives notifications.
 type NotificationClient struct {
 	serverURL  string
@@ -36,6 +41,7 @@ type NotificationClient struct {
 	mu        sync.RWMutex
 	closed    bool
 	closeChan chan struct{}
+	pingStop  chan struct{} // signal to stop ping goroutine
 
 	// Track disconnect time for grace period
 	disconnectTime  time.Time
@@ -102,6 +108,12 @@ func (c *NotificationClient) Connect() error {
 		c.OnConnect()
 	}
 
+	// Start ping goroutine to keep connection alive through ALBs
+	c.mu.Lock()
+	c.pingStop = make(chan struct{})
+	c.mu.Unlock()
+	go c.pingLoop()
+
 	go c.readLoop()
 	return nil
 }
@@ -110,6 +122,11 @@ func (c *NotificationClient) Connect() error {
 func (c *NotificationClient) readLoop() {
 	defer func() {
 		c.mu.Lock()
+		// Stop ping goroutine
+		if c.pingStop != nil {
+			close(c.pingStop)
+			c.pingStop = nil
+		}
 		if c.conn != nil {
 			c.conn.Close()
 			c.conn = nil
@@ -176,6 +193,32 @@ func (c *NotificationClient) readLoop() {
 			if c.onResolved != nil {
 				c.onResolved(resolved)
 			}
+		}
+	}
+}
+
+// pingLoop sends periodic pings to keep the connection alive through load balancers.
+func (c *NotificationClient) pingLoop() {
+	ticker := time.NewTicker(PingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.mu.RLock()
+			conn := c.conn
+			c.mu.RUnlock()
+
+			if conn == nil {
+				return
+			}
+
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+				log.Printf("Ping failed: %v", err)
+				return
+			}
+		case <-c.pingStop:
+			return
 		}
 	}
 }

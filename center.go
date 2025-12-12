@@ -298,6 +298,9 @@ func ShowCenterWindow(daemonPort string) {
 	})
 
 	refreshTicker.Stop()
+
+	// Notify daemon that center is closing
+	signalCenterClosed(baseURL)
 }
 
 // positionCenterWindow positions the window in the top-right corner.
@@ -592,4 +595,17 @@ func dismissAllNotifications(baseURL string) string {
 
 	log.Println("All notifications dismissed")
 	return ""
+}
+
+// signalCenterClosed notifies the daemon that the center window has closed.
+func signalCenterClosed(baseURL string) {
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/center/close", nil)
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
 }

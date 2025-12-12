@@ -114,6 +114,10 @@ var (
 
 	// Notification center store
 	notificationStore *NotificationStore
+
+	// Track when center window last polled (to suppress popups when open)
+	lastCenterPoll   time.Time
+	lastCenterPollMu sync.RWMutex
 )
 
 // updateRulesConfig updates the global rules configuration.
@@ -121,6 +125,28 @@ func updateRulesConfig(cfg RulesConfig) {
 	rulesConfigMu.Lock()
 	currentRulesConfig = cfg
 	rulesConfigMu.Unlock()
+}
+
+// isCenterOpen returns true if the notification center was recently active.
+func isCenterOpen() bool {
+	lastCenterPollMu.RLock()
+	last := lastCenterPoll
+	lastCenterPollMu.RUnlock()
+	return time.Since(last) < 5*time.Second
+}
+
+// touchCenterPoll updates the last center poll time.
+func touchCenterPoll() {
+	lastCenterPollMu.Lock()
+	lastCenterPoll = time.Now()
+	lastCenterPollMu.Unlock()
+}
+
+// clearCenterPoll marks the center as closed.
+func clearCenterPoll() {
+	lastCenterPollMu.Lock()
+	lastCenterPoll = time.Time{}
+	lastCenterPollMu.Unlock()
 }
 
 func addNotification(n Notification) {
@@ -178,6 +204,11 @@ func addNotification(n Notification) {
 
 	// Silent action: stored to center but no popup or sound
 	if action == RuleActionSilent {
+		return
+	}
+
+	// Skip popup if notification center is open (user is already looking at notifications)
+	if isCenterOpen() {
 		return
 	}
 
@@ -466,6 +497,9 @@ func centerListHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Track that center is actively polling
+	touchCenterPoll()
+
 	stored := notificationStore.List()
 
 	// Parse notifications for JSON response
@@ -556,12 +590,23 @@ func centerCountHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]int{"count": notificationStore.Count()})
 }
 
+// centerCloseHandler signals that the notification center window has closed.
+func centerCloseHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	clearCenterPoll()
+	w.WriteHeader(http.StatusOK)
+}
+
 func startHTTPServer(port string) {
 	http.HandleFunc("/notify", httpHandler)
 	http.HandleFunc("/status", statusHandler)
 	http.HandleFunc("/center", centerListHandler)
 	http.HandleFunc("/center/", centerDismissHandler)
 	http.HandleFunc("/center/count", centerCountHandler)
+	http.HandleFunc("/center/close", centerCloseHandler)
 	addr := ":" + port
 	log.Printf("Listening on http://localhost%s/notify", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
