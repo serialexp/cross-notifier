@@ -124,6 +124,28 @@ func updateRulesConfig(cfg RulesConfig) {
 }
 
 func addNotification(n Notification) {
+	// Convert iconPath/iconHref to iconData for persistence
+	if n.IconData == "" && (n.IconPath != "" || n.IconHref != "") {
+		var img image.Image
+		var err error
+		if n.IconPath != "" {
+			img, err = loadIconFromPath(n.IconPath)
+		} else {
+			img, err = loadIconFromURL(n.IconHref)
+		}
+		if err != nil {
+			log.Printf("Failed to load icon: %v", err)
+		} else if img != nil {
+			if encoded, err := encodeImageToBase64(img); err != nil {
+				log.Printf("Failed to encode icon: %v", err)
+			} else {
+				n.IconData = encoded
+				n.IconPath = "" // Clear path since we have data
+				n.IconHref = "" // Clear href since we have data
+			}
+		}
+	}
+
 	// Check rules for action and sound
 	rulesConfigMu.RLock()
 	rulesCfg := currentRulesConfig

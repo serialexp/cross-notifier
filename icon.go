@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"image"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"net/http"
 	"os"
 	"time"
@@ -83,4 +83,13 @@ func resolveIcon(n Notification) (image.Image, error) {
 		return loadIconFromPath(n.IconPath)
 	}
 	return nil, nil
+}
+
+// encodeImageToBase64 encodes an image to a base64 PNG string.
+func encodeImageToBase64(img image.Image) (string, error) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return "", fmt.Errorf("png encode: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
