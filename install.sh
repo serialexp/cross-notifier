@@ -99,10 +99,10 @@ install_linux() {
     local glibc_ver
     glibc_ver=$(get_glibc_version)
 
-    # glibc 2.38+ can use modern build, older systems need legacy build
+    # glibc 2.38+ can use modern build, older systems use musl (static) build
     if [[ "$glibc_ver" -lt 238 ]]; then
-        suffix="-legacy"
-        info "Detected glibc < 2.38, using legacy build for compatibility"
+        suffix="-musl"
+        info "Detected glibc < 2.38, using musl (static) build for compatibility"
     fi
 
     local url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version}-linux-amd64${suffix}.tar.gz"

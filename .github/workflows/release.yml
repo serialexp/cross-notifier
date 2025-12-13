@@ -16,16 +16,7 @@ env:
 
 jobs:
   build-linux:
-    strategy:
-      matrix:
-        include:
-          # Modern build (glibc 2.38+) - ubuntu-latest (24.04)
-          - runner: ubuntu-latest
-            suffix: ""
-          # Legacy build (glibc 2.35+) - ubuntu-22.04
-          - runner: ubuntu-22.04
-            suffix: "-legacy"
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -66,14 +57,73 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
-          tar -czvf dist/cross-notifier-${VERSION}-linux-amd64${{ matrix.suffix }}.tar.gz \
+          tar -czvf dist/cross-notifier-${VERSION}-linux-amd64.tar.gz \
             cross-notifier \
             README.md
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-amd64${{ matrix.suffix }}
+          name: linux-amd64
+          path: dist/*.tar.gz
+
+  build-linux-musl:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.21
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            curl \
+            gcc \
+            musl-dev \
+            mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libxxf86vm-dev \
+            alsa-lib-dev \
+            gtk+3.0-dev
+
+      - name: Install Go
+        run: |
+          curl -LO https://go.dev/dl/go${{ env.GO_VERSION }}.linux-amd64.tar.gz
+          tar -C /usr/local -xzf go${{ env.GO_VERSION }}.linux-amd64.tar.gz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build
+        env:
+          CGO_ENABLED: 1
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          go build -ldflags "-X main.Version=${VERSION}" -o cross-notifier .
+
+      - name: Package
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          mkdir -p dist
+          tar -czvf dist/cross-notifier-${VERSION}-linux-amd64-musl.tar.gz \
+            cross-notifier \
+            README.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64-musl
           path: dist/*.tar.gz
 
   build-macos:
@@ -317,7 +367,7 @@ jobs:
           sbom: true
 
   release:
-    needs: [build-linux, build-macos, build-windows, build-server, build-docker]
+    needs: [build-linux, build-linux-musl, build-macos, build-windows, build-server, build-docker]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -333,7 +383,7 @@ jobs:
         with:
           files: |
             artifacts/linux-amd64/*
-            artifacts/linux-amd64-legacy/*
+            artifacts/linux-amd64-musl/*
             artifacts/macos-amd64/*
             artifacts/macos-arm64/*
             artifacts/windows-amd64/*
