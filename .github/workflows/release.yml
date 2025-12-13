@@ -16,7 +16,16 @@ env:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Modern build (glibc 2.38+) - ubuntu-latest (24.04)
+          - runner: ubuntu-latest
+            suffix: ""
+          # Legacy build (glibc 2.35+) - ubuntu-22.04
+          - runner: ubuntu-22.04
+            suffix: "-legacy"
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,14 +66,14 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
-          tar -czvf dist/cross-notifier-${VERSION}-linux-amd64.tar.gz \
+          tar -czvf dist/cross-notifier-${VERSION}-linux-amd64${{ matrix.suffix }}.tar.gz \
             cross-notifier \
             README.md
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-amd64
+          name: linux-amd64${{ matrix.suffix }}
           path: dist/*.tar.gz
 
   build-macos:
@@ -324,6 +333,7 @@ jobs:
         with:
           files: |
             artifacts/linux-amd64/*
+            artifacts/linux-amd64-legacy/*
             artifacts/macos-amd64/*
             artifacts/macos-arm64/*
             artifacts/windows-amd64/*

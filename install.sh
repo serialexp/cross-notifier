@@ -46,6 +46,18 @@ enable_autostart() {
     fi
 }
 
+# Get glibc version as a comparable integer (e.g., 2.35 -> 235)
+get_glibc_version() {
+    local version
+    version=$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [[ -z "$version" ]]; then
+        echo "0"
+        return
+    fi
+    # Convert to comparable integer: 2.35 -> 235, 2.38 -> 238
+    echo "$version" | awk -F. '{ printf "%d%02d", $1, $2 }'
+}
+
 # Detect OS and architecture
 detect_platform() {
     local os arch
@@ -83,7 +95,17 @@ get_latest_version() {
 # Install on Linux
 install_linux() {
     local version="$1"
-    local url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version}-linux-amd64.tar.gz"
+    local suffix=""
+    local glibc_ver
+    glibc_ver=$(get_glibc_version)
+
+    # glibc 2.38+ can use modern build, older systems need legacy build
+    if [[ "$glibc_ver" -lt 238 ]]; then
+        suffix="-legacy"
+        info "Detected glibc < 2.38, using legacy build for compatibility"
+    fi
+
+    local url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version}-linux-amd64${suffix}.tar.gz"
     local tmp_dir
     tmp_dir=$(mktemp -d)
 
