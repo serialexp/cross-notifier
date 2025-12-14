@@ -67,34 +67,29 @@ jobs:
           name: linux-amd64
           path: dist/*.tar.gz
 
-  build-linux-musl:
-    runs-on: ubuntu-latest
-    container:
-      image: alpine:3.21
+  build-linux-compat:
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
       - name: Install dependencies
         run: |
-          apk add --no-cache \
-            curl \
-            gcc \
-            musl-dev \
-            mesa-dev \
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev \
             libx11-dev \
             libxcursor-dev \
             libxrandr-dev \
             libxinerama-dev \
             libxi-dev \
             libxxf86vm-dev \
-            alsa-lib-dev \
-            gtk+3.0-dev
-
-      - name: Install Go
-        run: |
-          curl -LO https://go.dev/dl/go${{ env.GO_VERSION }}.linux-amd64.tar.gz
-          tar -C /usr/local -xzf go${{ env.GO_VERSION }}.linux-amd64.tar.gz
-          echo "/usr/local/go/bin" >> $GITHUB_PATH
+            libasound2-dev \
+            libgtk-3-dev
 
       - name: Get version
         id: version
@@ -106,8 +101,6 @@ jobs:
           fi
 
       - name: Build
-        env:
-          CGO_ENABLED: 1
         run: |
           VERSION=${{ steps.version.outputs.version }}
           go build -ldflags "-X main.Version=${VERSION}" -o cross-notifier .
@@ -116,14 +109,14 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
-          tar -czvf dist/cross-notifier-${VERSION}-linux-amd64-musl.tar.gz \
+          tar -czvf dist/cross-notifier-${VERSION}-linux-amd64-compat.tar.gz \
             cross-notifier \
             README.md
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-amd64-musl
+          name: linux-amd64-compat
           path: dist/*.tar.gz
 
   build-macos:
@@ -367,7 +360,7 @@ jobs:
           sbom: true
 
   release:
-    needs: [build-linux, build-linux-musl, build-macos, build-windows, build-server, build-docker]
+    needs: [build-linux, build-linux-compat, build-macos, build-windows, build-server, build-docker]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -383,7 +376,7 @@ jobs:
         with:
           files: |
             artifacts/linux-amd64/*
-            artifacts/linux-amd64-musl/*
+            artifacts/linux-amd64-compat/*
             artifacts/macos-amd64/*
             artifacts/macos-arm64/*
             artifacts/windows-amd64/*
