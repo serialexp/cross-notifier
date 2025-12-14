@@ -4,16 +4,16 @@ go 1.25.4
 
 require (
 	fyne.io/systray v1.11.0
-	github.com/AllenDang/cimgui-go v1.3.2-0.20250409185506-6b2ff1aa26b5
-	github.com/AllenDang/giu v0.14.1
+	github.com/AllenDang/cimgui-go v1.1.0
+	github.com/AllenDang/giu v0.10.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20250301202403-da16c1255728
 	github.com/golangci/golangci-lint v1.64.8
 	github.com/google/uuid v1.6.0
 	github.com/gopxl/beep/v2 v2.1.1
 	github.com/gorilla/websocket v1.5.3
-	github.com/sqweek/dialog v0.0.0-20240226140203-065105509627
 	golang.org/x/image v0.27.0
+	golang.org/x/sys v0.31.0
 )
 
 require (
@@ -31,7 +31,6 @@ require (
 	github.com/GaijinEntertainment/go-exhaustruct/v3 v3.3.1 // indirect
 	github.com/Masterminds/semver/v3 v3.3.0 // indirect
 	github.com/OpenPeeDeeP/depguard/v2 v2.2.1 // indirect
-	github.com/TheTitanrain/w32 v0.0.0-20180517000239-4f5cfb03fabf // indirect
 	github.com/alecthomas/go-check-sumtype v0.3.1 // indirect
 	github.com/alexkohler/nakedret/v2 v2.0.5 // indirect
 	github.com/alexkohler/prealloc v1.0.0 // indirect
@@ -204,7 +203,6 @@ require (
 	golang.org/x/exp/typeparams v0.0.0-20250210185358-939b2ce775ac // indirect
 	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/sync v0.14.0 // indirect
-	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/text v0.25.0 // indirect
 	golang.org/x/tools v0.31.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
