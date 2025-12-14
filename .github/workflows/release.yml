@@ -101,6 +101,8 @@ jobs:
           fi
 
       - name: Build
+        env:
+          CGO_CXXFLAGS: "-fpermissive"
         run: |
           VERSION=${{ steps.version.outputs.version }}
           go build -ldflags "-X main.Version=${VERSION}" -o cross-notifier .
