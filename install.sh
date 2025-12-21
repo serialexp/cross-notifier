@@ -99,10 +99,10 @@ install_linux() {
     local glibc_ver
     glibc_ver=$(get_glibc_version)
 
-    # glibc 2.38+ can use modern build, older systems use musl (static) build
+    # glibc 2.38+ can use modern build, older systems use compat build (built on Ubuntu 22.04)
     if [[ "$glibc_ver" -lt 238 ]]; then
-        suffix="-musl"
-        info "Detected glibc < 2.38, using musl (static) build for compatibility"
+        suffix="-compat"
+        info "Detected glibc < 2.38, using compatibility build"
     fi
 
     local url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version}-linux-amd64${suffix}.tar.gz"
