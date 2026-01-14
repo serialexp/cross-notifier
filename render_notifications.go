@@ -1,10 +1,7 @@
 package main
 
 import (
-	"fmt"
-	"image"
 	"image/color"
-	"log"
 	"math"
 	"time"
 
@@ -83,10 +80,10 @@ func (nr *NotificationRenderer) renderNotificationCard(n Notification, index int
 	yOffset := float32(index * stackPeek)
 
 	// Card styling
-	cardBg := color.RGBA{R: 38, G: 38, Z: 43, A: 230} // Dark theme default
+	cardBg := color.RGBA{R: 38, G: 38, B: 43, A: 230} // Dark theme default
 	if currentTheme.cardBg.W > 0.5 {
 		// Light theme
-		cardBg = color.RGBA{R: 245, G: 245, Z: 245, A: 230}
+		cardBg = color.RGBA{R: 245, G: 245, B: 245, A: 230}
 	}
 
 	if nr.hoveredCard[n.ID] {
@@ -108,21 +105,10 @@ func (nr *NotificationRenderer) renderNotificationCard(n Notification, index int
 	borderColor := nr.statusBorderColor(n.Status)
 	nr.renderer.DrawBorder(xOffset, yOffset, cardWidth, cardHeight, 2, borderColor)
 
-	// Render icon if present
+	// TODO: Render icon if present
+	// Icons are stored as *giu.Texture but DrawImage needs *image.RGBA
+	// Need to store decoded images separately or convert texture format
 	textStartX := float32(padding)
-	if _, ok := textures[n.ID]; ok {
-		if img, ok := textures[n.ID].(*image.RGBA); ok {
-			nr.renderer.DrawImage(
-				xOffset+float32(padding),
-				yOffset+float32(padding),
-				float32(iconSize),
-				float32(iconSize),
-				img,
-				Color{R: 1, G: 1, B: 1, A: 1},
-			)
-			textStartX = float32(padding + iconSize + padding)
-		}
-	}
 
 	// Calculate text area
 	textAreaWidth := cardWidth - textStartX - float32(padding)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"image"
 	"image/draw"
@@ -9,8 +8,6 @@ import (
 	"os"
 
 	"github.com/golang/freetype"
-	"github.com/golang/freetype/truetype"
-	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -53,6 +50,9 @@ func CreateFontAtlas(fontData []byte, fontSize int) (*FontAtlas, error) {
 	c.SetFontSize(float64(fontSize))
 	c.SetDPI(72)
 
+	// Calculate scale for glyph metrics (fontSize * DPI / 72)
+	scale := fixed.Int26_6(fontSize * 64) // 72 DPI / 72 * 64 = 64
+
 	atlas := &FontAtlas{
 		Glyphs: make(map[rune]GlyphInfo),
 		Height: fontSize,
@@ -72,12 +72,13 @@ func CreateFontAtlas(fontData []byte, fontSize int) (*FontAtlas, error) {
 	padding := 2
 
 	for _, ch := range chars {
-		_, advance, ok := c.GlyphAdvance(ch)
-		if !ok {
+		idx := ttf.Index(ch)
+		if idx == 0 {
 			continue
 		}
 
-		advInt := int((advance >> 6)) // Convert from fixed point
+		hm := ttf.HMetric(scale, idx)
+		advInt := int(hm.AdvanceWidth >> 6) // Convert from fixed point
 		totalWidth += advInt + padding
 		if fontSize > maxHeight {
 			maxHeight = fontSize
@@ -100,12 +101,13 @@ func CreateFontAtlas(fontData []byte, fontSize int) (*FontAtlas, error) {
 	y := fontSize + padding
 
 	for _, ch := range chars {
-		advance, ok := c.GlyphAdvance(ch)
-		if !ok {
+		idx := ttf.Index(ch)
+		if idx == 0 {
 			continue
 		}
 
-		advInt := int((advance >> 6))
+		hm := ttf.HMetric(scale, idx)
+		advInt := int(hm.AdvanceWidth >> 6)
 
 		// Wrap if needed
 		if x+advInt+padding > atlasW {

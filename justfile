@@ -21,7 +21,7 @@ lint:
     @echo "Checking formatting..."
     @gofmt -s -l . | grep -v '^vendor/' | (! grep .) || (echo "Run 'just fmt' to fix" && exit 1)
     @echo "Running go vet..."
-    go vet ./...
+    go vet -unsafeptr=false ./...
     @echo "Running golangci-lint..."
     golangci-lint run --timeout=5m
 

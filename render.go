@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"log"
+	"unsafe"
 
 	"github.com/go-gl/gl/v2.1/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
@@ -147,15 +147,17 @@ func (r *Renderer) setupBuffers() {
 	stride := int32(8 * 4) // 8 floats per vertex
 
 	// Position
-	gl.VertexAttribPointer(0, 2, gl.FLOAT, false, stride, gl.PtrOffset(0))
+	gl.VertexAttribPointer(0, 2, gl.FLOAT, false, stride, nil)
 	gl.EnableVertexAttribArray(0)
 
 	// TexCoord
-	gl.VertexAttribPointer(1, 2, gl.FLOAT, false, stride, gl.PtrOffset(2*4))
+	texCoordOffset := uintptr(2 * 4)
+	gl.VertexAttribPointer(1, 2, gl.FLOAT, false, stride, unsafe.Pointer(texCoordOffset))
 	gl.EnableVertexAttribArray(1)
 
 	// Color
-	gl.VertexAttribPointer(2, 4, gl.FLOAT, false, stride, gl.PtrOffset(4*4))
+	colorOffset := uintptr(4 * 4)
+	gl.VertexAttribPointer(2, 4, gl.FLOAT, false, stride, unsafe.Pointer(colorOffset))
 	gl.EnableVertexAttribArray(2)
 
 	gl.BindVertexArray(0)
@@ -252,7 +254,7 @@ func (r *Renderer) drawQuad(x, y, w, h float32, c Color, useTexture bool) {
 	loc := gl.GetUniformLocation(r.shaderProg, gl.Str("useTexture\x00"))
 	gl.Uniform1i(loc, 0)
 
-	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, gl.PtrOffset(0))
+	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, nil)
 }
 
 func (r *Renderer) drawQuadTextured(x, y, w, h float32, c Color, texID uint32) {
@@ -277,7 +279,7 @@ func (r *Renderer) drawQuadTextured(x, y, w, h float32, c Color, texID uint32) {
 	loc := gl.GetUniformLocation(r.shaderProg, gl.Str("useTexture\x00"))
 	gl.Uniform1i(loc, 1)
 
-	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, gl.PtrOffset(0))
+	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, nil)
 }
 
 func (r *Renderer) drawText(x, y float32, text string, c Color) Bounds {
@@ -336,7 +338,7 @@ func (r *Renderer) drawGlyph(x, y, w, h, texX, texY, texW, texH float32, c Color
 	loc := gl.GetUniformLocation(r.shaderProg, gl.Str("useTexture\x00"))
 	gl.Uniform1i(loc, 1)
 
-	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, gl.PtrOffset(0))
+	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, nil)
 }
 
 // ==================== Utility functions ====================

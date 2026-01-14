@@ -12,6 +12,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	"image/png"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -244,6 +245,8 @@ func (s *Server) handleActionMessage(clientName string, msg ActionMessage) {
 }
 
 func (s *Server) HandleNotify(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Received /notify request from %s", r.RemoteAddr)
+
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"POST required"}`, http.StatusMethodNotAllowed)
 		return
@@ -254,18 +257,26 @@ func (s *Server) HandleNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read body into buffer so we can log it if decode fails
+	var buf bytes.Buffer
+	bodyReader := io.TeeReader(r.Body, &buf)
+
 	var n Notification
-	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+	if err := json.NewDecoder(bodyReader).Decode(&n); err != nil {
+		log.Printf("Failed to decode notification JSON: %v", err)
+		log.Printf("Raw payload: %s", buf.String())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if n.Source == "" {
+		log.Printf("Validation failed: missing source field. Payload: %s", buf.String())
 		http.Error(w, "source is required", http.StatusBadRequest)
 		return
 	}
 
 	if n.Title == "" && n.Message == "" {
+		log.Printf("Validation failed: missing title and message. Payload: %s", buf.String())
 		http.Error(w, "title or message required", http.StatusBadRequest)
 		return
 	}
