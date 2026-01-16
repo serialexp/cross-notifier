@@ -46,7 +46,7 @@ just docker-local
 ## Architecture
 
 **Binaries:**
-- **Daemon** (`cross-notifier`): Displays notifications locally via giu/imgui GUI. Accepts HTTP POST on `:9876/notify`. Optionally connects to a remote server to receive notifications.
+- **Daemon** (`cross-notifier`): Displays notifications locally via GLFW+OpenGL GUI. Accepts HTTP POST on `:9876/notify`. Optionally connects to a remote server to receive notifications.
 - **Server** (`cmd/server`): Headless. Accepts HTTP POST notifications and broadcasts to connected WebSocket clients. Handles exclusive notification coordination.
 
 **Key files:**
@@ -61,7 +61,7 @@ just docker-local
 1. Service sends POST to server's `/notify` endpoint with auth header
 2. Server fetches/resizes any `iconHref` URLs, converts to base64 `iconData`
 3. Server broadcasts notification JSON to all connected WebSocket clients
-4. Daemon receives via WebSocket, calls `addNotification()`, renders via giu
+4. Daemon receives via WebSocket, calls `addNotification()`, renders via OpenGL
 
 **Icon sources** (priority order):
 - `iconData` - base64 encoded image (used for remote notifications)
@@ -72,9 +72,9 @@ just docker-local
 
 **Config location:** `~/Library/Application Support/cross-notifier/config.json` (macOS)
 
-## imgui/giu Quirks
+## OpenGL Renderer Notes
 
-**Cursor X position resets after TextWrapped:** When using `imgui.TextWrapped()`, the cursor X position resets to 0 on the next line. To maintain consistent left padding across multiple text elements, explicitly call `imgui.SetCursorPosX(x)` before each text element. Using `imgui.SetCursorPos()` once at the start is not sufficient.
+**Transparency does not compound:** When drawing overlapping elements with alpha values, the topmost draw call's alpha is what you see - they don't multiply together. If a card has `A: 0.863` and you draw a button on top with `A: 0.5`, the button area shows at 0.5 transparency, not 0.5 × 0.863. To make elements visually match their background's transparency, use the same alpha value.
 
 ## Git Commits
 

@@ -1,10 +1,12 @@
 package main
 
 import (
-	"image/color"
+	"log"
 	"math"
+	"sync"
 	"time"
 
+	"github.com/go-gl/gl/v2.1/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
@@ -16,6 +18,17 @@ type NotificationRenderer struct {
 	hoveredCard       map[int64]bool
 	successAnimations map[int64]float32
 	lastFrameTime     time.Time
+	mouseX            float32
+	mouseY            float32
+	mouseDown         bool
+	prevMouseDown     bool
+
+	// Icon texture cache
+	iconTextures map[int64]uint32
+
+	// Pending texture deletions (must be processed on main GL thread)
+	pendingDeletes   []int64
+	pendingDeletesMu sync.Mutex
 }
 
 // NewNotificationRenderer creates a notification renderer
@@ -26,15 +39,56 @@ func NewNotificationRenderer(renderer *Renderer, window *glfw.Window) *Notificat
 		notifications:     []Notification{},
 		hoveredCard:       make(map[int64]bool),
 		successAnimations: make(map[int64]float32),
+		iconTextures:      make(map[int64]uint32),
 		lastFrameTime:     time.Now(),
 	}
 }
 
+// expandedCardWidth returns the width for an expanded card (2x normal)
+func expandedCardWidth() float32 {
+	return float32(notificationW-2*padding) * 2
+}
+
+// expandedCardHeight calculates the height for an expanded notification
+func (nr *NotificationRenderer) expandedCardHeight(n Notification, cardWidth float32) float32 {
+	// Calculate text area width (card - padding - icon - padding - buttons - padding)
+	textAreaWidth := cardWidth - float32(padding) - float32(iconSize) - float32(padding)
+	textAreaWidth -= 22 // expand button
+	if len(n.Actions) > 0 {
+		textAreaWidth -= 22 // dismiss button
+	}
+	textAreaWidth -= float32(padding)
+
+	// Wrap the message to get line count
+	messageWidth := int(textAreaWidth + 22 + 22) // Add button widths back for message area
+	wrapped := nr.renderer.fontAtlas.WrapText(n.Message, messageWidth)
+	lineCount := countLines(wrapped)
+	if lineCount < 2 {
+		lineCount = 2 // Minimum 2 lines
+	}
+
+	// Calculate height: padding + title + sectionGap + message + sectionGap + source + padding
+	messageHeight := float32(lineCount)*textHeight + float32(lineCount-1)*lineSpacing
+	height := float32(padding) + textHeight + sectionGap + messageHeight + sectionGap + textHeight + float32(padding)
+
+	if len(n.Actions) > 0 {
+		height += sectionGap + actionRowH
+	}
+
+	return height
+}
+
 // Render renders the notification window
 func (nr *NotificationRenderer) Render() error {
+	// Process pending texture deletions on the GL thread
+	nr.processPendingDeletes()
+
+	updateTheme()
+	pruneExpired()
 	now := time.Now()
 	deltaTime := float32(now.Sub(nr.lastFrameTime).Seconds())
 	nr.lastFrameTime = now
+	nr.updateMouseState()
 
 	// Get visible notifications
 	notifMu.Lock()
@@ -55,9 +109,31 @@ func (nr *NotificationRenderer) Render() error {
 	// Update animations
 	nr.updateAnimations(deltaTime)
 
-	// Calculate window size
-	height := notificationH + (len(visible)-1)*stackPeek + padding
-	nr.window.SetSize(notificationW, height)
+	// Calculate window size based on stacked card heights.
+	maxHeight := float32(0)
+	maxWidth := float32(notificationW)
+	for i := range visible {
+		n := visible[i]
+		var cardHeight, cardWidth float32
+		if n.Expanded {
+			cardWidth = expandedCardWidth() + float32(padding*2)
+			cardHeight = nr.expandedCardHeight(n, expandedCardWidth())
+		} else {
+			scale := 1.0 - float32(i)*0.03
+			cardWidth = float32(notificationW-2*padding)*scale + float32(padding*2)
+			cardHeight = float32(notificationHeight(n)) * scale
+		}
+		bottom := float32(i*stackPeek) + cardHeight
+		if bottom > maxHeight {
+			maxHeight = bottom
+		}
+		if cardWidth > maxWidth {
+			maxWidth = cardWidth
+		}
+	}
+	height := int(math.Ceil(float64(maxHeight))) + padding
+	width := int(math.Ceil(float64(maxWidth)))
+	nr.window.SetSize(width, height)
 
 	// Position window
 	nr.positionWindow()
@@ -67,141 +143,88 @@ func (nr *NotificationRenderer) Render() error {
 		nr.renderNotificationCard(visible[i], i, len(visible))
 	}
 
+	nr.prevMouseDown = nr.mouseDown
 	return nil
 }
 
 func (nr *NotificationRenderer) renderNotificationCard(n Notification, index int, total int) {
 	// Calculate card properties
 	scale := 1.0 - float32(index)*0.03
-	cardWidth := float32(notificationW-2*padding) * scale
-	cardHeight := (float32(notificationHeight(n)) - float32(padding)) * scale
+	var cardWidth, cardHeight float32
+	if n.Expanded {
+		cardWidth = expandedCardWidth()
+		cardHeight = nr.expandedCardHeight(n, cardWidth)
+	} else {
+		cardWidth = float32(notificationW-2*padding) * scale
+		cardHeight = float32(notificationHeight(n)) * scale
+	}
 
-	xOffset := float32((notificationW-2*padding)-int(cardWidth)) / 2
+	// Right-align cards within the window
+	windowW, _ := nr.window.GetSize()
+	xOffset := float32(windowW) - cardWidth - float32(padding)
 	yOffset := float32(index * stackPeek)
 
 	// Card styling
-	cardBg := color.RGBA{R: 38, G: 38, B: 43, A: 230} // Dark theme default
-	if currentTheme.cardBg.W > 0.5 {
-		// Light theme
-		cardBg = color.RGBA{R: 245, G: 245, B: 245, A: 230}
-	}
+	cardBg := currentTheme.cardBg
 
 	if nr.hoveredCard[n.ID] {
 		// Increase opacity when hovered
-		cardBg.A = 255
+		cardBg.A = 1
 	}
 
 	// Apply success animation tint
 	if progress, ok := nr.successAnimations[n.ID]; ok && progress > 0 {
-		greenTint := uint8(76 * progress) // 0x4C * progress
-		cardBg.G = uint8(math.Min(float64(cardBg.G)+float64(greenTint), 255))
+		cardBg.G = float32(math.Min(float64(cardBg.G+0.3*progress), 1))
 	}
-
-	// Render card background (rounded rectangle as filled rect for now)
-	bgColor := ColorRGBA(cardBg)
-	nr.renderer.DrawRect(xOffset, yOffset, cardWidth, cardHeight, bgColor)
-
-	// Render border
-	borderColor := nr.statusBorderColor(n.Status)
-	nr.renderer.DrawBorder(xOffset, yOffset, cardWidth, cardHeight, 2, borderColor)
-
-	// TODO: Render icon if present
-	// Icons are stored as *giu.Texture but DrawImage needs *image.RGBA
-	// Need to store decoded images separately or convert texture format
-	textStartX := float32(padding)
-
-	// Calculate text area
-	textAreaWidth := cardWidth - textStartX - float32(padding)
-	if len(n.Actions) > 0 {
-		textAreaWidth -= 30 // Space for dismiss button
+	theme := NotificationCardTheme{
+		CardBg:      cardBg,
+		Title:       currentTheme.titleText,
+		Body:        currentTheme.bodyText,
+		Muted:       currentTheme.moreText,
+		ButtonBg:    currentCenterTheme.buttonBg,
+		ButtonHv:    currentCenterTheme.buttonHov,
+		DismissBg:   currentCenterTheme.dismissBg,
+		DismissHv:   currentCenterTheme.dismissHov,
+		DismissText: currentCenterTheme.dismissText,
 	}
-
-	// Render title
-	if n.Title != "" {
-		titleColor := Color{R: 1, G: 1, B: 1, A: 1}
-		if currentTheme.titleText.W > 0 {
-			titleColor = Color{
-				R: currentTheme.titleText.X,
-				G: currentTheme.titleText.Y,
-				B: currentTheme.titleText.Z,
-				A: currentTheme.titleText.W,
-			}
-		}
-
-		truncatedTitle := nr.renderer.fontAtlas.Truncate(n.Title, int(textAreaWidth))
-		nr.renderer.DrawText(
-			xOffset+textStartX,
-			yOffset+float32(padding),
-			truncatedTitle,
-			titleColor,
-		)
+	data := NotificationCardData{
+		ID:          n.ID,
+		Title:       n.Title,
+		Message:     n.Message,
+		Status:      n.Status,
+		Source:      n.Source,
+		Actions:     n.Actions,
+		IconTexture: nr.getIconTexture(n),
+		CreatedAt:   n.CreatedAt,
+		Expanded:    n.Expanded,
 	}
-
-	// Render message
-	if n.Message != "" {
-		msgColor := Color{R: 0.8, G: 0.8, B: 0.8, A: 1}
-		if currentTheme.bodyText.W > 0 {
-			msgColor = Color{
-				R: currentTheme.bodyText.X,
-				G: currentTheme.bodyText.Y,
-				B: currentTheme.bodyText.Z,
-				A: currentTheme.bodyText.W,
-			}
-		}
-
-		truncatedMsg := nr.renderer.fontAtlas.TruncateLines(
-			n.Message,
-			int(textAreaWidth),
-			2,
-		)
-		nr.renderer.DrawText(
-			xOffset+textStartX,
-			yOffset+float32(padding+32),
-			truncatedMsg,
-			msgColor,
-		)
+	opts := NotificationCardOptions{
+		Padding:            float32(cardPadding),
+		IconSize:           iconSize,
+		ActionRowH:         actionRowH,
+		ButtonH:            cardButtonHeight,
+		ShowDismiss:        true,
+		ShowSource:         true,
+		AllowDismissOnCard: true,
+		MouseX:             nr.mouseX,
+		MouseY:             nr.mouseY,
+		JustClicked:        nr.justClicked(),
+		BorderColor:        nr.statusBorderColor(n.Status),
+		GetActionState: func(idx int) ActionState {
+			state := GetActionState(n.ID, idx)
+			return state.State
+		},
+		OnDismiss: func() {
+			dismissNotification(n.ID)
+		},
+		OnAction: func(idx int, action Action) {
+			nr.handleActionClick(n, idx, action)
+		},
+		OnExpand: func() {
+			toggleNotificationExpanded(n.ID)
+		},
 	}
-
-	// Render action buttons
-	if len(n.Actions) > 0 {
-		nr.renderActionButtons(n, xOffset, yOffset, cardWidth, cardHeight)
-		nr.renderDismissButton(n, xOffset, yOffset, cardWidth)
-	}
-
-	// Track hover state
-	// TODO: Implement mouse position checking for hover detection
-}
-
-func (nr *NotificationRenderer) renderActionButtons(n Notification, x, y, w, h float32) {
-	// Button rendering logic
-	buttonY := y + h - float32(actionRowH) + float32(padding)
-	buttonX := x + float32(padding)
-
-	for i, action := range n.Actions {
-		if i > 0 {
-			buttonX += float32(actionBtnPadding) + 80 // Approximate button width
-		}
-
-		// Render button background
-		btnBg := Color{R: 0.25, G: 0.25, B: 0.28, A: 1}
-		nr.renderer.DrawRect(buttonX, buttonY, 80, 24, btnBg)
-
-		// Render button text
-		btnText := Color{R: 1, G: 1, B: 1, A: 1}
-		nr.renderer.DrawText(buttonX+4, buttonY+4, action.Label, btnText)
-	}
-}
-
-func (nr *NotificationRenderer) renderDismissButton(n Notification, x, y, w float32) {
-	dismissX := x + w - 25
-	dismissY := y + float32(padding)
-
-	// Render X button
-	btnBg := Color{R: 0.5, G: 0.3, B: 0.3, A: 0.5}
-	nr.renderer.DrawRect(dismissX, dismissY, 20, 20, btnBg)
-
-	btnText := Color{R: 1, G: 1, B: 1, A: 1}
-	nr.renderer.DrawText(dismissX+6, dismissY+3, "×", btnText)
+	nr.hoveredCard[n.ID] = drawNotificationCard(nr.renderer, data, xOffset, yOffset, cardWidth, cardHeight, theme, opts)
 }
 
 func (nr *NotificationRenderer) statusBorderColor(status string) Color {
@@ -230,8 +253,9 @@ func (nr *NotificationRenderer) positionWindow() {
 		return
 	}
 
+	windowW, _ := nr.window.GetSize()
 	margin := 20
-	x := videoMode.Width - notificationW - margin
+	x := videoMode.Width - windowW - margin
 	y := margin
 
 	nr.window.SetPos(x, y)
@@ -247,6 +271,92 @@ func (nr *NotificationRenderer) updateAnimations(deltaTime float32) {
 			nr.successAnimations[id] = newProgress
 		}
 	}
+}
+
+func (nr *NotificationRenderer) updateMouseState() {
+	x, y := nr.window.GetCursorPos()
+	nr.mouseX = float32(x)
+	nr.mouseY = float32(y)
+	nr.mouseDown = nr.window.GetMouseButton(glfw.MouseButtonLeft) == glfw.Press
+}
+
+func (nr *NotificationRenderer) justClicked() bool {
+	return nr.mouseDown && !nr.prevMouseDown
+}
+
+// getIconTexture returns the OpenGL texture ID for a notification's icon, loading it if needed.
+func (nr *NotificationRenderer) getIconTexture(n Notification) uint32 {
+	// Already cached?
+	if tex, ok := nr.iconTextures[n.ID]; ok {
+		return tex
+	}
+
+	// No icon data?
+	if n.IconData == "" {
+		return 0
+	}
+
+	// Load and cache
+	img, err := loadIconFromBase64(n.IconData)
+	if err != nil {
+		log.Printf("Failed to load icon for notification %d: %v", n.ID, err)
+		return 0
+	}
+
+	rgba := imageToRGBA(img)
+	tex := uploadTexture(rgba)
+	nr.iconTextures[n.ID] = tex
+	return tex
+}
+
+// cleanupIconTexture queues a texture for deletion (safe to call from any goroutine).
+func (nr *NotificationRenderer) cleanupIconTexture(id int64) {
+	nr.pendingDeletesMu.Lock()
+	nr.pendingDeletes = append(nr.pendingDeletes, id)
+	nr.pendingDeletesMu.Unlock()
+}
+
+// processPendingDeletes deletes queued textures (must be called on GL thread).
+func (nr *NotificationRenderer) processPendingDeletes() {
+	nr.pendingDeletesMu.Lock()
+	toDelete := nr.pendingDeletes
+	nr.pendingDeletes = nil
+	nr.pendingDeletesMu.Unlock()
+
+	for _, id := range toDelete {
+		if tex, ok := nr.iconTextures[id]; ok && tex != 0 {
+			gl.DeleteTextures(1, &tex)
+			delete(nr.iconTextures, id)
+		}
+	}
+}
+
+func (nr *NotificationRenderer) handleActionClick(n Notification, actionIdx int, action Action) {
+	connectedClient := getConnectedClient()
+	if n.Exclusive && n.ServerID != "" && connectedClient != nil {
+		SetActionState(n.ID, actionIdx, ActionLoading, nil)
+		go func() {
+			if err := connectedClient.SendAction(n.ServerID, actionIdx); err != nil {
+				log.Printf("Failed to send action to server: %v", err)
+				SetActionState(n.ID, actionIdx, ActionIdle, nil)
+			}
+		}()
+		return
+	}
+
+	ExecuteActionAsync(n.ID, actionIdx, action,
+		func() {
+			triggerSuccessAnimation(n.ID)
+		},
+		func(err error) {
+			dismissNotification(n.ID)
+			addNotification(Notification{
+				Title:    "Action Failed",
+				Message:  err.Error(),
+				Duration: 5,
+			})
+		},
+	)
 }
 
 // StartSuccessAnimation starts a success animation for a notification

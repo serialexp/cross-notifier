@@ -59,11 +59,19 @@ type RulesConfig struct {
 	Rules   []NotificationRule `json:"rules"`   // evaluated in order, first match wins
 }
 
+// CenterPanelConfig holds settings for the notification center panel.
+type CenterPanelConfig struct {
+	RespectWorkAreaTop    bool `json:"respectWorkAreaTop"`    // avoid menu bar (macOS)
+	RespectWorkAreaBottom bool `json:"respectWorkAreaBottom"` // avoid dock
+}
+
 // Config holds the persistent configuration for the daemon.
 type Config struct {
-	Name    string      `json:"name,omitempty"` // client display name for identification
-	Servers []Server    `json:"servers,omitempty"`
-	Rules   RulesConfig `json:"rules,omitempty"`
+	Name             string            `json:"name,omitempty"` // client display name for identification
+	Servers          []Server          `json:"servers,omitempty"`
+	Rules            RulesConfig       `json:"rules,omitempty"`
+	CenterPanel      CenterPanelConfig `json:"centerPanel,omitempty"`
+	DebugFontMetrics bool              `json:"debugFontMetrics,omitempty"`
 }
 
 // ConfigPath returns the platform-appropriate path for the config file.

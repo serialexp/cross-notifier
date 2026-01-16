@@ -10,3 +10,11 @@ func isDarkMode() bool {
 	// Could add Windows/Linux detection later
 	return true
 }
+
+func refreshThemeIfStale() {
+	// No-op on non-macOS
+}
+
+func forceRefreshTheme() {
+	// No-op on non-macOS
+}

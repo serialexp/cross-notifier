@@ -14,13 +14,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
-	"github.com/AllenDang/cimgui-go/imgui"
-	g "github.com/AllenDang/giu"
 	"github.com/fsnotify/fsnotify"
-	"github.com/go-gl/glfw/v3.3/glfw"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -31,75 +29,78 @@ const (
 	defaultPort      = "9876"
 	maxVisible       = 4
 	notificationW    = 320
-	notificationH    = 80 // base height without actions
-	actionRowH       = 28 // height of action button row
 	iconSize         = 48
 	padding          = 10
 	stackPeek        = 20 // pixels visible for stacked notifications
 	actionBtnPadding = 4  // padding between action buttons
+	cardPadding      = padding
+	cardButtonHeight = 22
+	actionRowH       = cardButtonHeight
+
+	// Layout constants - must match font metrics
+	textHeight  = 18 // Hack font at 16px
+	lineSpacing = 2  // gap between lines within a section
+	sectionGap  = 8  // gap between sections
+
+	// Calculated: title + sectionGap + message(2 lines) + sectionGap + source
+	notificationH = textHeight + sectionGap + (textHeight*2 + lineSpacing) + sectionGap + textHeight
 )
 
 // Theme colors
 type theme struct {
 	windowBg  color.RGBA
-	cardBg    imgui.Vec4
-	titleText imgui.Vec4
-	bodyText  imgui.Vec4
-	moreText  imgui.Vec4
+	cardBg    Color
+	titleText Color
+	bodyText  Color
+	moreText  Color
 }
 
 var (
 	darkTheme = theme{
 		windowBg:  color.RGBA{0, 0, 0, 0}, // transparent window, cards provide the background
-		cardBg:    imgui.Vec4{X: 0.15, Y: 0.15, Z: 0.17, W: 0.9},
-		titleText: imgui.Vec4{X: 1, Y: 1, Z: 1, W: 1},
-		bodyText:  imgui.Vec4{X: 0.8, Y: 0.8, Z: 0.8, W: 1},
-		moreText:  imgui.Vec4{X: 0.6, Y: 0.6, Z: 0.6, W: 1},
+		cardBg:    Color{R: 0.15, G: 0.15, B: 0.17, A: 0.9},
+		titleText: Color{R: 1, G: 1, B: 1, A: 1},
+		bodyText:  Color{R: 0.8, G: 0.8, B: 0.8, A: 1},
+		moreText:  Color{R: 0.6, G: 0.6, B: 0.6, A: 1},
 	}
 	lightTheme = theme{
 		windowBg:  color.RGBA{0, 0, 0, 0}, // transparent window, cards provide the background
-		cardBg:    imgui.Vec4{X: 0.96, Y: 0.96, Z: 0.96, W: 0.9},
-		titleText: imgui.Vec4{X: 0.1, Y: 0.1, Z: 0.1, W: 1},
-		bodyText:  imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1},
-		moreText:  imgui.Vec4{X: 0.5, Y: 0.5, Z: 0.5, W: 1},
+		cardBg:    Color{R: 0.96, G: 0.96, B: 0.96, A: 0.9},
+		titleText: Color{R: 0.1, G: 0.1, B: 0.1, A: 1},
+		bodyText:  Color{R: 0.3, G: 0.3, B: 0.3, A: 1},
+		moreText:  Color{R: 0.5, G: 0.5, B: 0.5, A: 1},
 	}
 	currentTheme = &darkTheme
 )
 
 type Notification struct {
-	ID          int64     `json:"-"`            // local ID for GUI tracking
-	ServerID    string    `json:"id,omitempty"` // server-assigned ID for coordination
-	ServerLabel string    `json:"-"`            // label of server that sent this notification
-	Source      string    `json:"source"`       // identifier of the service that sent this notification
-	Title       string    `json:"title"`
-	Message     string    `json:"message"`
-	Status      string    `json:"status,omitempty"`    // info, success, warning, error
-	IconData    string    `json:"iconData,omitempty"`  // base64 encoded image
-	IconHref    string    `json:"iconHref,omitempty"`  // URL to fetch image from
-	IconPath    string    `json:"iconPath,omitempty"`  // local file path
-	Duration    int       `json:"duration,omitempty"`  // seconds: >0 auto-close, 0/omitted=persistent
-	Actions     []Action  `json:"actions,omitempty"`   // clickable action buttons
-	Exclusive   bool      `json:"exclusive,omitempty"` // if true, resolved when any client takes action
-	CreatedAt   time.Time `json:"-"`
-	ExpiresAt   time.Time `json:"-"`
+	ID            int64     `json:"-"`            // local ID for GUI tracking
+	ServerID      string    `json:"id,omitempty"` // server-assigned ID for coordination
+	ServerLabel   string    `json:"-"`            // label of server that sent this notification
+	Source        string    `json:"source"`       // identifier of the service that sent this notification
+	Title         string    `json:"title"`
+	Message       string    `json:"message"`
+	Status        string    `json:"status,omitempty"`    // info, success, warning, error
+	IconData      string    `json:"iconData,omitempty"`  // base64 encoded image
+	IconHref      string    `json:"iconHref,omitempty"`  // URL to fetch image from
+	IconPath      string    `json:"iconPath,omitempty"`  // local file path
+	Duration      int       `json:"duration,omitempty"`  // seconds: >0 auto-close, 0/omitted=persistent
+	Actions       []Action  `json:"actions,omitempty"`   // clickable action buttons
+	Exclusive     bool      `json:"exclusive,omitempty"` // if true, resolved when any client takes action
+	CreatedAt     time.Time `json:"-"`
+	ExpiresAt     time.Time `json:"-"`
+	StoreOnExpire bool      `json:"-"`
+	Expanded      bool      `json:"-"` // UI state: card is expanded to show full message
 }
 
 var (
-	wnd           *g.MasterWindow
-	notifications []Notification
-	notifMu       sync.Mutex
-	nextID        int64 = 1
+	windowManager  *WindowManager
+	notifyRenderer *NotificationRenderer
+	notifications  []Notification
+	notifMu        sync.Mutex
+	nextID         int64 = 1
 
-	// Texture management
-	textures     = make(map[int64]*g.Texture)
-	pendingIcons = make(map[int64]Notification) // notification ID -> notification with icon info
-
-	// Hover state tracking (previous frame)
-	hoveredCards = make(map[int64]bool)
-	textureMu    sync.Mutex
-
-	// Animation state for notifications
-	successAnimations = make(map[int64]float32) // notification ID -> animation progress (0-1)
+	textureMu sync.Mutex
 
 	// Server clients for exclusive notification actions (keyed by server URL)
 	serverClients   = make(map[string]*NotificationClient)
@@ -118,6 +119,8 @@ var (
 	// Track when center window last polled (to suppress popups when open)
 	lastCenterPoll   time.Time
 	lastCenterPollMu sync.RWMutex
+
+	centerOpenCh chan string
 )
 
 // updateRulesConfig updates the global rules configuration.
@@ -150,6 +153,9 @@ func clearCenterPoll() {
 }
 
 func addNotification(n Notification) {
+	// Refresh theme if it's been a while since last check
+	refreshThemeIfStale()
+
 	// Convert iconPath/iconHref to iconData for persistence
 	if n.IconData == "" && (n.IconPath != "" || n.IconHref != "") {
 		var img image.Image
@@ -191,24 +197,23 @@ func addNotification(n Notification) {
 		return
 	}
 
-	// Store to notification center (for normal and silent actions)
-	var storeID int64
-	if notificationStore != nil {
-		rawJSON, err := json.Marshal(n)
-		if err != nil {
-			log.Printf("Failed to serialize notification: %v", err)
-		} else {
-			storeID = notificationStore.Add(n, rawJSON)
-		}
+	// Decide whether to store now or only after popup expires.
+	storeNow := action == RuleActionSilent
+	if action == RuleActionNormal && isCenterOpen() {
+		storeNow = true
 	}
 
 	// Silent action: stored to center but no popup or sound
 	if action == RuleActionSilent {
+		n.CreatedAt = time.Now()
+		storeNotification(n)
 		return
 	}
 
 	// Skip popup if notification center is open (user is already looking at notifications)
 	if isCenterOpen() {
+		n.CreatedAt = time.Now()
+		storeNotification(n)
 		return
 	}
 
@@ -220,14 +225,11 @@ func addNotification(n Notification) {
 	notifMu.Lock()
 	defer notifMu.Unlock()
 
-	// Use store ID if available, otherwise fall back to local counter
-	if storeID > 0 {
-		n.ID = storeID
-	} else {
-		n.ID = nextID
-		nextID++
-	}
+	// Use local ID for popup notifications; store after expiration if applicable.
+	n.ID = nextID
+	nextID++
 	n.CreatedAt = time.Now()
+	n.StoreOnExpire = !storeNow
 
 	// Track server ID -> local ID mapping for exclusive notifications
 	if n.ServerID != "" {
@@ -244,25 +246,14 @@ func addNotification(n Notification) {
 		n.ExpiresAt = time.Time{} // zero time = never expires
 	}
 
-	// Queue icon loading if any icon source is specified
-	if n.IconData != "" || n.IconHref != "" || n.IconPath != "" {
-		textureMu.Lock()
-		pendingIcons[n.ID] = n
-		textureMu.Unlock()
-	}
-
 	notifications = append(notifications, n)
-
-	// Only update GUI if window is initialized
-	if wnd != nil {
-		g.Update()
-	}
 }
 
 func dismissNotification(id int64) {
 	// Remove from notification center store
 	if notificationStore != nil {
 		notificationStore.Remove(id)
+		markCenterDirty()
 	}
 
 	notifMu.Lock()
@@ -272,21 +263,38 @@ func dismissNotification(id int64) {
 		if n.ID == id {
 			notifications = append(notifications[:i], notifications[i+1:]...)
 			cleanupTexture(id)
-			if wnd != nil {
-				g.Update()
-			}
 			return
 		}
 	}
 }
 
+func toggleNotificationExpanded(id int64) {
+	notifMu.Lock()
+	defer notifMu.Unlock()
+
+	for i, n := range notifications {
+		if n.ID == id {
+			notifications[i].Expanded = !notifications[i].Expanded
+			return
+		}
+	}
+}
+
+func storeNotification(n Notification) {
+	if notificationStore == nil {
+		return
+	}
+	rawJSON, err := json.Marshal(n)
+	if err != nil {
+		log.Printf("Failed to serialize notification: %v", err)
+		return
+	}
+	_ = notificationStore.Add(n, rawJSON)
+	markCenterDirty()
+}
+
 func cleanupTexture(id int64) {
 	textureMu.Lock()
-	defer textureMu.Unlock()
-	delete(textures, id)
-	delete(pendingIcons, id)
-	delete(hoveredCards, id)
-	delete(successAnimations, id)
 	// Clean up server ID mapping
 	for serverID, localID := range serverIDToLocalID {
 		if localID == id {
@@ -294,7 +302,14 @@ func cleanupTexture(id int64) {
 			break
 		}
 	}
+	textureMu.Unlock()
+
 	CleanupActionStates(id)
+
+	// Clean up OpenGL texture from popup renderer
+	if notifyRenderer != nil {
+		notifyRenderer.cleanupIconTexture(id)
+	}
 }
 
 // handleResolvedMessage processes a resolved notification from the server.
@@ -318,40 +333,6 @@ func handleResolvedMessage(resolved ResolvedMessage) {
 			Title:    "Action Failed",
 			Message:  resolved.Error,
 			Duration: 5,
-		})
-	}
-}
-
-func loadPendingIcons() {
-	textureMu.Lock()
-	pending := make(map[int64]Notification)
-	for id, n := range pendingIcons {
-		pending[id] = n
-	}
-	textureMu.Unlock()
-
-	for id, n := range pending {
-		img, err := resolveIcon(n)
-		if err != nil {
-			log.Printf("Failed to load icon for notification %d: %v", id, err)
-			textureMu.Lock()
-			delete(pendingIcons, id)
-			textureMu.Unlock()
-			continue
-		}
-		if img == nil {
-			textureMu.Lock()
-			delete(pendingIcons, id)
-			textureMu.Unlock()
-			continue
-		}
-
-		notifID := id // capture for closure
-		g.EnqueueNewTextureFromRgba(img, func(tex *g.Texture) {
-			textureMu.Lock()
-			textures[notifID] = tex
-			delete(pendingIcons, notifID)
-			textureMu.Unlock()
 		})
 	}
 }
@@ -397,22 +378,19 @@ func pruneExpired() {
 	defer notifMu.Unlock()
 
 	now := time.Now()
-	changed := false
 	filtered := notifications[:0]
 	for _, n := range notifications {
-		// Keep if: never expires (zero time) or not yet expired
-		if n.ExpiresAt.IsZero() || now.Before(n.ExpiresAt) {
+		// Keep if: expanded, never expires (zero time), or not yet expired
+		if n.Expanded || n.ExpiresAt.IsZero() || now.Before(n.ExpiresAt) {
 			filtered = append(filtered, n)
 		} else {
+			if n.StoreOnExpire {
+				storeNotification(n)
+			}
 			cleanupTexture(n.ID)
-			changed = true
 		}
 	}
 	notifications = filtered
-
-	if changed && wnd != nil {
-		g.Update()
-	}
 }
 
 // apiError writes a JSON error response with usage information.
@@ -571,6 +549,7 @@ func centerDismissHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	notificationStore.Clear()
+	markCenterDirty()
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -617,434 +596,33 @@ func startHTTPServer(port string) {
 func updateTheme() {
 	if isDarkMode() {
 		currentTheme = &darkTheme
+		currentCenterTheme = &centerDarkTheme
 	} else {
 		currentTheme = &lightTheme
-	}
-}
-
-func loop() {
-	// Update theme based on OS setting
-	updateTheme()
-
-	// Prune expired notifications each frame
-	pruneExpired()
-
-	// Load any pending icons (must happen on main thread)
-	loadPendingIcons()
-
-	// Update window size on main thread
-	updateWindowSize()
-
-	notifMu.Lock()
-	visible := notifications
-	if len(visible) > maxVisible {
-		visible = visible[:maxVisible]
-	}
-	notifMu.Unlock()
-
-	if len(visible) == 0 {
-		// Nothing to show - render empty
-		return
-	}
-
-	imgui.PushStyleVarFloat(imgui.StyleVarWindowBorderSize, 0)
-	imgui.PushStyleVarFloat(imgui.StyleVarWindowRounding, 8)
-	g.PushColorWindowBg(currentTheme.windowBg)
-
-	g.SingleWindow().Layout(
-		g.Custom(func() {
-			// Render back to front (last notification first, so first is on top)
-			for i := len(visible) - 1; i >= 0; i-- {
-				renderStackedNotification(visible[i], i, len(visible))
-			}
-		}),
-	)
-
-	g.PopStyleColor()
-	imgui.PopStyleVar()
-	imgui.PopStyleVar()
-}
-
-// truncateToWidth truncates text to fit within maxWidth, adding ellipsis if needed.
-func truncateToWidth(text string, maxWidth float32) string {
-	if maxWidth <= 0 {
-		return ""
-	}
-	size := imgui.CalcTextSize(text)
-	if size.X <= maxWidth {
-		return text
-	}
-
-	ellipsis := "..."
-	ellipsisWidth := imgui.CalcTextSize(ellipsis).X
-	targetWidth := maxWidth - ellipsisWidth
-
-	// Binary search for the right length
-	runes := []rune(text)
-	low, high := 0, len(runes)
-	for low < high {
-		mid := (low + high + 1) / 2
-		testStr := string(runes[:mid])
-		if imgui.CalcTextSize(testStr).X <= targetWidth {
-			low = mid
-		} else {
-			high = mid - 1
-		}
-	}
-
-	if low == 0 {
-		return ellipsis
-	}
-	return string(runes[:low]) + ellipsis
-}
-
-// truncateToLines truncates text to fit within maxWidth and maxLines.
-func truncateToLines(text string, maxWidth float32, maxLines int) string {
-	if maxWidth <= 0 || maxLines <= 0 {
-		return ""
-	}
-
-	lineHeight := imgui.CurrentStyle().ItemSpacing().Y + imgui.CalcTextSize("A").Y
-	maxHeight := lineHeight * float32(maxLines)
-
-	// Check if it fits
-	size := imgui.CalcTextSizeV(text, false, maxWidth)
-	if size.Y <= maxHeight {
-		return text
-	}
-
-	// Need to truncate - find how much text fits
-	ellipsis := "..."
-	runes := []rune(text)
-
-	// Binary search for the right length
-	low, high := 0, len(runes)
-	for low < high {
-		mid := (low + high + 1) / 2
-		testStr := string(runes[:mid]) + ellipsis
-		size := imgui.CalcTextSizeV(testStr, false, maxWidth)
-		if size.Y <= maxHeight {
-			low = mid
-		} else {
-			high = mid - 1
-		}
-	}
-
-	if low == 0 {
-		return ellipsis
-	}
-	return string(runes[:low]) + ellipsis
-}
-
-// statusBorderColor returns the border color for a notification based on its status.
-func statusBorderColor(status string) imgui.Vec4 {
-	switch status {
-	case "success":
-		return imgui.Vec4{X: 0.2, Y: 0.7, Z: 0.3, W: 0.9}
-	case "warning":
-		return imgui.Vec4{X: 0.9, Y: 0.6, Z: 0.2, W: 0.9}
-	case "error":
-		return imgui.Vec4{X: 0.8, Y: 0.2, Z: 0.2, W: 0.9}
-	default: // info or empty
-		return imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 0.8}
+		currentCenterTheme = &centerLightTheme
 	}
 }
 
 // notificationHeight calculates the height needed for a notification.
 func notificationHeight(n Notification) float32 {
-	height := float32(notificationH)
+	height := float32(notificationH + padding*2)
 	if len(n.Actions) > 0 {
-		height += actionRowH
+		height += sectionGap + actionRowH
 	}
 	return height
 }
 
-func renderStackedNotification(n Notification, index int, total int) {
-	id := n.ID
-
-	// Scale down cards behind the first one for depth effect
-	scale := float32(1.0) - float32(index)*0.03
-	baseHeight := notificationHeight(n)
-	cardWidth := (notificationW - 2*padding) * scale
-	cardHeight := (baseHeight - padding) * scale
-
-	// Position this card in the stack, centered horizontally
-	xOffset := ((notificationW - 2*padding) - cardWidth) / 2
-	yOffset := float32(index * stackPeek)
-	imgui.SetCursorPos(imgui.Vec2{X: xOffset, Y: yOffset})
-
-	// Card styling - full opacity when hovered
-	cardBg := currentTheme.cardBg
-	if hoveredCards[id] {
-		cardBg.W = 1.0
-	}
-
-	// Apply success animation tint
-	textureMu.Lock()
-	successProgress := successAnimations[id]
-	textureMu.Unlock()
-	if successProgress > 0 {
-		// Blend towards green
-		greenTint := float32(0.3) * successProgress
-		cardBg.Y += greenTint // Add green
-	}
-
-	imgui.PushStyleColorVec4(imgui.ColChildBg, cardBg)
-	imgui.PushStyleColorVec4(imgui.ColBorder, statusBorderColor(n.Status))
-	imgui.PushStyleVarFloat(imgui.StyleVarChildRounding, 6)
-	imgui.PushStyleVarFloat(imgui.StyleVarChildBorderSize, 1)
-
-	childFlags := imgui.ChildFlagsBorders
-	windowFlags := imgui.WindowFlagsNone
-
-	if imgui.BeginChildStrV(fmt.Sprintf("notif_%d", id), imgui.Vec2{X: cardWidth, Y: cardHeight}, childFlags, windowFlags) {
-		// Check for icon texture
-		textureMu.Lock()
-		tex := textures[id]
-		textureMu.Unlock()
-
-		// Padding inside card
-		const innerPadding float32 = 10
-
-		textStartX := innerPadding
-
-		if tex != nil {
-			// Layout: icon on left at top, text on right
-			imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: innerPadding})
-			imgui.Image(tex.ID(), imgui.Vec2{X: iconSize, Y: iconSize})
-			textStartX = innerPadding + iconSize + innerPadding
-		}
-
-		// Calculate available text width (account for dismiss button if actions present)
-		dismissButtonWidth := float32(0)
-		if len(n.Actions) > 0 {
-			dismissButtonWidth = 20
-		}
-		textWidth := cardWidth - textStartX - innerPadding - dismissButtonWidth
-
-		// Title - single line, truncated
-		imgui.SetCursorPos(imgui.Vec2{X: textStartX, Y: innerPadding})
-		if n.Title != "" {
-			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.titleText)
-			truncatedTitle := truncateToWidth(n.Title, textWidth)
-			imgui.Text(truncatedTitle)
-			imgui.PopStyleColor()
-		}
-
-		// Dismiss button (only for notifications with actions)
-		if len(n.Actions) > 0 {
-			imgui.SameLine()
-			imgui.SetCursorPosX(cardWidth - 25)
-			imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.5, Y: 0.3, Z: 0.3, W: 0.5})
-			imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.7, Y: 0.3, Z: 0.3, W: 0.8})
-			if imgui.SmallButton(fmt.Sprintf("x##%d", id)) {
-				go dismissNotification(id)
-			}
-			imgui.PopStyleColor()
-			imgui.PopStyleColor()
-		}
-
-		// Message - max 2 lines, truncated
-		if n.Message != "" {
-			imgui.SetCursorPosX(textStartX)
-			imgui.PushStyleColorVec4(imgui.ColText, currentTheme.bodyText)
-			truncatedMsg := truncateToLines(n.Message, textWidth+dismissButtonWidth, 2)
-			imgui.TextWrapped(truncatedMsg)
-			imgui.PopStyleColor()
-		}
-
-		// Action buttons
-		if len(n.Actions) > 0 {
-			renderActionButtons(n)
-		}
-
-		// Track hover state for next frame
-		isHovered := imgui.IsWindowHovered()
-		hoveredCards[id] = isHovered
-
-		// Only show hand cursor if no actions (otherwise buttons handle their own cursors)
-		if isHovered && len(n.Actions) == 0 {
-			imgui.SetMouseCursor(imgui.MouseCursorHand)
-		}
-
-		// Click to dismiss (only if no actions, to avoid conflicts with button clicks)
-		if len(n.Actions) == 0 && isHovered && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
-			go dismissNotification(id)
-		}
-	}
-	imgui.EndChild()
-	imgui.PopStyleVar()   // ChildBorderSize
-	imgui.PopStyleVar()   // ChildRounding
-	imgui.PopStyleColor() // Border
-	imgui.PopStyleColor() // ChildBg
-}
-
-// renderActionButtons renders the action buttons for a notification.
-func renderActionButtons(n Notification) {
-	const innerPadding float32 = 10
-
-	// Position at bottom of content area (before action row)
-	imgui.SetCursorPos(imgui.Vec2{X: innerPadding, Y: float32(notificationH) - innerPadding - 4})
-
-	for i, action := range n.Actions {
-		if i > 0 {
-			imgui.SameLineV(0, actionBtnPadding)
-		}
-
-		state := GetActionState(n.ID, i)
-		renderActionButton(n, i, action, state)
-	}
-}
-
-// renderActionButton renders a single action button with appropriate styling.
-func renderActionButton(n Notification, actionIdx int, action Action, state *ActionStateInfo) {
-	label := action.Label
-	notifID := n.ID
-
-	// Style button based on state
-	switch state.State {
-	case ActionLoading:
-		// Show loading indicator
-		label = "..."
-		imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1})
-		imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1})
-		imgui.PushStyleColorVec4(imgui.ColButtonActive, imgui.Vec4{X: 0.3, Y: 0.3, Z: 0.3, W: 1})
-	case ActionSuccess:
-		imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.2, Y: 0.6, Z: 0.2, W: 1})
-		imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.2, Y: 0.6, Z: 0.2, W: 1})
-		imgui.PushStyleColorVec4(imgui.ColButtonActive, imgui.Vec4{X: 0.2, Y: 0.6, Z: 0.2, W: 1})
-	case ActionError:
-		imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.6, Y: 0.2, Z: 0.2, W: 1})
-		imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.6, Y: 0.2, Z: 0.2, W: 1})
-		imgui.PushStyleColorVec4(imgui.ColButtonActive, imgui.Vec4{X: 0.6, Y: 0.2, Z: 0.2, W: 1})
-	default:
-		imgui.PushStyleColorVec4(imgui.ColButton, imgui.Vec4{X: 0.25, Y: 0.25, Z: 0.28, W: 1})
-		imgui.PushStyleColorVec4(imgui.ColButtonHovered, imgui.Vec4{X: 0.35, Y: 0.35, Z: 0.38, W: 1})
-		imgui.PushStyleColorVec4(imgui.ColButtonActive, imgui.Vec4{X: 0.2, Y: 0.2, Z: 0.23, W: 1})
-	}
-
-	imgui.PushStyleVarFloat(imgui.StyleVarFrameRounding, 4)
-
-	buttonID := fmt.Sprintf("%s##action_%d_%d", label, notifID, actionIdx)
-	if imgui.Button(buttonID) && state.State == ActionIdle {
-		// For exclusive notifications connected to server, send action to server
-		connectedClient := getConnectedClient()
-		if n.Exclusive && n.ServerID != "" && connectedClient != nil {
-			SetActionState(notifID, actionIdx, ActionLoading, nil)
-			go func() {
-				if err := connectedClient.SendAction(n.ServerID, actionIdx); err != nil {
-					log.Printf("Failed to send action to server: %v", err)
-					// Fall back to local execution
-					SetActionState(notifID, actionIdx, ActionIdle, nil)
-				}
-				if wnd != nil {
-					g.Update()
-				}
-			}()
-		} else {
-			// Execute action locally
-			ExecuteActionAsync(notifID, actionIdx, action,
-				func() {
-					// On success: trigger success animation then dismiss
-					triggerSuccessAnimation(notifID)
-				},
-				func(err error) {
-					// On error: dismiss and show error notification
-					dismissNotification(notifID)
-					addNotification(Notification{
-						Title:    "Action Failed",
-						Message:  err.Error(),
-						Duration: 5,
-					})
-				},
-			)
-		}
-		if wnd != nil {
-			g.Update()
-		}
-	}
-
-	imgui.PopStyleVar()
-	imgui.PopStyleColor()
-	imgui.PopStyleColor()
-	imgui.PopStyleColor()
-}
-
 // triggerSuccessAnimation starts the success animation for a notification.
 func triggerSuccessAnimation(notifID int64) {
-	textureMu.Lock()
-	successAnimations[notifID] = 1.0
-	textureMu.Unlock()
+	if notifyRenderer != nil {
+		notifyRenderer.StartSuccessAnimation(notifID)
+	}
 
 	go func() {
-		// Animate over 500ms then dismiss
-		start := time.Now()
-		duration := 500 * time.Millisecond
-		for time.Since(start) < duration {
-			progress := 1.0 - float32(time.Since(start))/float32(duration)
-			textureMu.Lock()
-			successAnimations[notifID] = progress
-			textureMu.Unlock()
-			if wnd != nil {
-				g.Update()
-			}
-			time.Sleep(16 * time.Millisecond) // ~60fps
-		}
+		// Wait for animation to complete then dismiss
+		time.Sleep(500 * time.Millisecond)
 		dismissNotification(notifID)
 	}()
-}
-
-func updateWindowSize() {
-	notifMu.Lock()
-	count := len(notifications)
-	if count > maxVisible {
-		count = maxVisible
-	}
-	var firstNotif Notification
-	if count > 0 {
-		firstNotif = notifications[0]
-	}
-	notifMu.Unlock()
-
-	// Hide window when no notifications, show when there are some
-	if count == 0 {
-		wnd.SetSize(1, 1)
-		wnd.SetPos(-100, -100)
-		return
-	}
-
-	// Reposition when showing notifications
-	positionWindow()
-
-	// Stack layout: first card full height + peek for each additional card
-	// Use actual height of first notification (may have actions)
-	firstHeight := int(notificationHeight(firstNotif))
-	height := firstHeight + (count-1)*stackPeek + padding
-
-	wnd.SetSize(notificationW, height)
-}
-
-func positionWindow() {
-	// Get primary monitor dimensions using GLFW
-	monitor := glfw.GetPrimaryMonitor()
-	if monitor == nil {
-		// Fallback to a reasonable default position if monitor detection fails
-		wnd.SetPos(100, 100)
-		return
-	}
-
-	videoMode := monitor.GetVideoMode()
-	if videoMode == nil {
-		wnd.SetPos(100, 100)
-		return
-	}
-
-	// Position in top-right corner with some margin
-	margin := 20
-	x := videoMode.Width - notificationW - margin
-	y := margin
-
-	wnd.SetPos(x, y)
 }
 
 // makeConnectionStatusChecker returns a function that queries the daemon's
@@ -1086,23 +664,6 @@ func launchSettingsProcess(port string) {
 	// Don't wait - let it run independently
 }
 
-// launchCenterProcess starts the notification center window as a separate process.
-func launchCenterProcess(port string) {
-	execPath, err := os.Executable()
-	if err != nil {
-		log.Printf("Failed to get executable path: %v", err)
-		return
-	}
-
-	cmd := exec.Command(execPath, "-center")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), fmt.Sprintf("CROSS_NOTIFIER_DAEMON_PORT=%s", port))
-	if err := cmd.Start(); err != nil {
-		log.Printf("Failed to start notification center: %v", err)
-	}
-}
-
 // getConnectedClient returns any connected server client for sending actions.
 func getConnectedClient() *NotificationClient {
 	serverClientsMu.RLock()
@@ -1128,16 +689,14 @@ func connectToServer(server Server, clientName string) {
 	})
 	client.SetOnResolved(func(resolved ResolvedMessage) {
 		handleResolvedMessage(resolved)
-		if wnd != nil {
-			g.Update()
-		}
 	})
 
 	client.OnConnect = func() {
 		addNotification(Notification{
 			Title:    "Connected",
 			Message:  fmt.Sprintf("Connected to %s", serverLabel),
-			Duration: 3,
+			IconPath: "tray.png",
+			Duration: 20,
 		})
 	}
 	client.OnDisconnect = func() {
@@ -1261,6 +820,7 @@ func watchConfig(currentCfg *Config) {
 
 						// Update rules configuration
 						updateRulesConfig(cfg.Rules)
+						debugFontMetrics = cfg.DebugFontMetrics
 
 						// Build map of new servers
 						newServers := make(map[string]Server)
@@ -1317,7 +877,7 @@ func runDaemon(port string, cfg *Config) {
 			launchSettingsProcess(port)
 		},
 		func() {
-			launchCenterProcess(port)
+			OpenCenterWindow(port)
 		},
 		func() int {
 			// Return number of connected servers
@@ -1343,6 +903,7 @@ func runDaemon(port string, cfg *Config) {
 
 	// Initialize rules configuration
 	updateRulesConfig(cfg.Rules)
+	debugFontMetrics = cfg.DebugFontMetrics
 
 	// Initialize notification store
 	notificationStore = NewNotificationStore(DefaultStorePath())
@@ -1359,29 +920,40 @@ func runDaemon(port string, cfg *Config) {
 	// Watch config file for changes
 	watchConfig(cfg)
 
-	// Create notification window
-	wnd = g.NewMasterWindow(
-		"Notifications",
-		notificationW, notificationH,
-		g.MasterWindowFlagsFloating|
-			g.MasterWindowFlagsFrameless|
-			g.MasterWindowFlagsTransparent,
-	)
-	wnd.SetBgColor(color.RGBA{0, 0, 0, 0})
+	centerOpenCh = make(chan string, 1)
 
-	// Periodically trigger redraws for expiration checks
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		for range ticker.C {
-			g.Update()
+	windowManager = NewWindowManager()
+	notifyWnd, err := windowManager.CreateNotificationWindow()
+	if err != nil {
+		log.Fatalf("Failed to create notification window: %v", err)
+	}
+
+	mw := windowManager.GetManagedWindow(notifyWnd)
+	if mw == nil {
+		log.Fatalf("Failed to manage notification window")
+	}
+
+	notifyRenderer = NewNotificationRenderer(mw.Renderer, notifyWnd)
+	windowManager.SetWindowRenderCallback(notifyWnd, notifyRenderer.Render)
+
+	if err := windowManager.Run(func() error {
+		for {
+			select {
+			case requestPort := <-centerOpenCh:
+				if err := openCenterWindowInProcess(windowManager, requestPort); err != nil {
+					log.Printf("Failed to open notification center: %v", err)
+				}
+			default:
+				return nil
+			}
 		}
-	}()
-
-	positionWindow()
-	wnd.Run(loop)
+	}); err != nil {
+		log.Fatalf("Window manager failed: %v", err)
+	}
 }
 
 func main() {
+	runtime.LockOSThread()
 	port := flag.String("port", defaultPort, "Port to listen on (or CROSS_NOTIFIER_PORT env)")
 	connect := flag.String("connect", "", "WebSocket URL of server to connect to (or CROSS_NOTIFIER_SERVER env)")
 	secret := flag.String("secret", "", "Shared secret for authentication (or CROSS_NOTIFIER_SECRET env)")
@@ -1434,6 +1006,12 @@ func main() {
 		cfg = &Config{}
 	}
 
+	// Apply center panel config (default to respecting top work area for macOS menu bar)
+	if cfg.CenterPanel == (CenterPanelConfig{}) {
+		cfg.CenterPanel.RespectWorkAreaTop = true
+	}
+	centerPanelConfig = cfg.CenterPanel
+
 	// CLI flags override config
 	if *name != "" {
 		cfg.Name = *name
@@ -1467,7 +1045,7 @@ func main() {
 
 		isConnected := makeConnectionStatusChecker(daemonPort)
 		log.Printf("Opening settings window with config: Name=%q, Servers=%d", cfg.Name, len(cfg.Servers))
-		result := ShowSettingsWindow(cfg, isConnected)
+		result := ShowSettingsWindowNew(cfg, isConnected)
 
 		if result.Cancelled || result.Config == nil {
 			log.Println("Setup cancelled or closed without saving")
@@ -1495,7 +1073,9 @@ func main() {
 			daemonPort = *port
 		}
 
-		ShowCenterWindow(daemonPort)
+		if err := ShowCenterWindow(daemonPort); err != nil {
+			log.Printf("Notification center error: %v", err)
+		}
 		return
 	}
 

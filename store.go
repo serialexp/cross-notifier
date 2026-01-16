@@ -96,10 +96,14 @@ func (s *NotificationStore) Add(n Notification, rawJSON []byte) int64 {
 	id := s.nextID
 	s.nextID++
 
+	createdAt := time.Now()
+	if !n.CreatedAt.IsZero() {
+		createdAt = n.CreatedAt
+	}
 	stored := StoredNotification{
 		ID:        id,
 		Payload:   rawJSON,
-		CreatedAt: time.Now(),
+		CreatedAt: createdAt,
 	}
 
 	s.Notifications = append(s.Notifications, stored)

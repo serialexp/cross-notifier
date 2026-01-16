@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
+
+var wmLastLog time.Time
 
 // WindowType identifies the type of window
 type WindowType int
@@ -19,10 +22,12 @@ const (
 
 // WindowManager manages multiple GLFW windows
 type WindowManager struct {
-	windows   map[*glfw.Window]*ManagedWindow
-	windowsMu sync.RWMutex
-	primary   *glfw.Window // Primary window for GL context
-	running   bool
+	windows     map[*glfw.Window]*ManagedWindow
+	windowsMu   sync.RWMutex
+	primary     *glfw.Window // Primary window for GL context
+	running     bool
+	initialized bool
+	ownsInit    bool
 }
 
 // ManagedWindow wraps a GLFW window with metadata
@@ -52,12 +57,18 @@ func (wm *WindowManager) CreateSettingsWindow() (*glfw.Window, error) {
 	return wm.createWindow("Cross-Notifier Settings", 500, 600, WindowTypeSettings, false)
 }
 
-// CreateCenterWindow creates the notification center window
+// CreateCenterWindow creates the notification center window as a borderless panel
 func (wm *WindowManager) CreateCenterWindow() (*glfw.Window, error) {
-	return wm.createWindow("Notification Center", 600, 400, WindowTypeCenter, false)
+	return wm.createWindow("Notification Center", centerWidth, 400, WindowTypeCenter, true)
 }
 
 func (wm *WindowManager) createWindow(title string, width, height int, wtype WindowType, isNotification bool) (*glfw.Window, error) {
+	if err := wm.ensureInit(); err != nil {
+		return nil, fmt.Errorf("failed to initialize GLFW: %w", err)
+	}
+
+	glfw.DefaultWindowHints()
+
 	// Set window hints
 	if isNotification {
 		// Notification window: borderless, floating, transparent
@@ -80,6 +91,9 @@ func (wm *WindowManager) createWindow(title string, width, height int, wtype Win
 	glfwWnd, err := glfw.CreateWindow(width, height, title, nil, wm.primary)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create window: %w", err)
+	}
+	if glfwWnd == nil {
+		return nil, fmt.Errorf("failed to create window: glfw returned nil window")
 	}
 
 	// Make it the primary window if first window
@@ -168,10 +182,12 @@ func (wm *WindowManager) SetWindowResizeCallback(w *glfw.Window, cb func(width, 
 
 // Run starts the main event loop
 func (wm *WindowManager) Run(renderFn func() error) error {
-	if err := glfw.Init(); err != nil {
+	if err := wm.ensureInit(); err != nil {
 		return fmt.Errorf("failed to initialize GLFW: %w", err)
 	}
-	defer glfw.Terminate()
+	if wm.ownsInit {
+		defer glfw.Terminate()
+	}
 
 	wm.running = true
 	defer func() { wm.running = false }()
@@ -197,12 +213,18 @@ func (wm *WindowManager) Run(renderFn func() error) error {
 				continue
 			}
 
+			tCtx := time.Now()
 			w.MakeContextCurrent()
+			dCtx := time.Since(tCtx)
 
 			width, height := w.GetSize()
 			mw.Renderer.Resize(width, height)
-			mw.Renderer.BeginFrame()
 
+			tBegin := time.Now()
+			mw.Renderer.BeginFrame()
+			dBegin := time.Since(tBegin)
+
+			tRender := time.Now()
 			// Call custom render function
 			if mw.OnRender != nil {
 				if err := mw.OnRender(); err != nil {
@@ -214,9 +236,21 @@ func (wm *WindowManager) Run(renderFn func() error) error {
 			if err := renderFn(); err != nil {
 				log.Printf("global render error: %v", err)
 			}
+			dRender := time.Since(tRender)
 
+			tEnd := time.Now()
 			mw.Renderer.EndFrame()
+			dEnd := time.Since(tEnd)
+
+			tSwap := time.Now()
 			w.SwapBuffers()
+			dSwap := time.Since(tSwap)
+
+			if time.Since(wmLastLog) > time.Second {
+				log.Printf("WM timing: ctx=%v begin=%v render=%v end=%v swap=%v",
+					dCtx, dBegin, dRender, dEnd, dSwap)
+				wmLastLog = time.Now()
+			}
 		}
 
 		// Remove closed windows
@@ -244,6 +278,18 @@ func (wm *WindowManager) Run(renderFn func() error) error {
 	}
 	wm.windowsMu.Unlock()
 
+	return nil
+}
+
+func (wm *WindowManager) ensureInit() error {
+	if wm.initialized {
+		return nil
+	}
+	if err := glfw.Init(); err != nil {
+		return err
+	}
+	wm.initialized = true
+	wm.ownsInit = true
 	return nil
 }
 

@@ -12,6 +12,10 @@ setup:
 build:
     go build -o cross-notifier .
 
+# Run the desktop daemon locally
+dev:
+    go run .
+
 # Run tests
 test:
     go test ./...
