@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- Orange/amber gradient for notifications -->
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f97316;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#c2410c;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#fdba74;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f97316;stop-opacity:1" />
+    </linearGradient>
+    <!-- Specular highlight gradient - top left -->
+    <linearGradient id="specular" x1="0%" y1="0%" x2="50%" y2="50%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0" />
+    </linearGradient>
+    <!-- Specular highlight gradient - bottom right -->
+    <linearGradient id="specular2" x1="100%" y1="100%" x2="50%" y2="50%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.7" />
+      <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0" />
+    </linearGradient>
+    <!-- Drop shadow filter -->
+    <filter id="shadow" x="-5%" y="-5%" width="115%" height="120%">
+      <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+    <!-- Clip path for specular highlight -->
+    <clipPath id="iconClip">
+      <rect x="50" y="50" width="412" height="412" rx="90" ry="90"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background rounded rect with shadow -->
+  <rect x="50" y="50" width="412" height="412" rx="90" ry="90" fill="url(#grad1)" filter="url(#shadow)"/>
+
+  <!-- Specular highlight - top and left border -->
+  <path d="M350 50
+           L140 50
+           A90 90 0 0 0 50 140
+           L50 350"
+        stroke="url(#specular)" stroke-width="4" fill="none" stroke-linecap="round"
+        clip-path="url(#iconClip)"/>
+
+  <!-- Specular highlight - bottom and right border -->
+  <path d="M162 462
+           L372 462
+           A90 90 0 0 0 462 372
+           L462 162"
+        stroke="url(#specular2)" stroke-width="4" fill="none" stroke-linecap="round"
+        clip-path="url(#iconClip)"/>
+
+  <!-- Bell icon -->
+  <!-- Bell body -->
+  <path d="M256 120
+           C200 120 160 165 160 220
+           L160 290
+           C160 300 150 310 140 315
+           L140 330
+           L372 330
+           L372 315
+           C362 310 352 300 352 290
+           L352 220
+           C352 165 312 120 256 120
+           Z"
+        fill="url(#grad2)" opacity="0.95"/>
+
+  <!-- Bell highlight -->
+  <path d="M256 130
+           C210 130 175 170 175 220
+           L175 280
+           C175 285 172 290 168 295
+           L180 295
+           C185 285 188 275 188 265
+           L188 220
+           C188 175 218 140 256 140
+           Z"
+        fill="#ffffff" opacity="0.3"/>
+
+  <!-- Bell top (handle) -->
+  <path d="M256 95
+           C240 95 230 105 230 120
+           L282 120
+           C282 105 272 95 256 95
+           Z"
+        fill="#fff7ed" opacity="0.9"/>
+
+  <!-- Bell clapper -->
+  <circle cx="256" cy="365" r="28" fill="#fff7ed" opacity="0.95"/>
+
+  <!-- Bell clapper highlight -->
+  <circle cx="250" cy="358" r="10" fill="#ffffff" opacity="0.4"/>
+
+</svg>
