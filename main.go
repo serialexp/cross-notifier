@@ -695,7 +695,7 @@ func connectToServer(server Server, clientName string) {
 		addNotification(Notification{
 			Title:    "Connected",
 			Message:  fmt.Sprintf("Connected to %s", serverLabel),
-			IconPath: "tray.png",
+			IconData: TrayIconBase64(),
 			Duration: 20,
 		})
 	}

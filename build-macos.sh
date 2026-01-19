@@ -13,20 +13,26 @@ CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 
-echo "Generating Icon.icns from logo.png..."
-if [ -f "logo.png" ]; then
+echo "Setting up app icon..."
+if [ -f "Icon.icns" ]; then
+    echo "Using existing Icon.icns"
+elif [ -f "icon.icns" ]; then
+    echo "Using existing icon.icns"
+    cp icon.icns Icon.icns
+elif [ -f "icon.png" ]; then
+    echo "Generating Icon.icns from icon.png..."
     rm -rf Icon.iconset
     mkdir -p Icon.iconset
-    sips -z 16 16 logo.png --out Icon.iconset/icon_16x16.png > /dev/null
-    sips -z 32 32 logo.png --out Icon.iconset/icon_16x16@2x.png > /dev/null
-    sips -z 32 32 logo.png --out Icon.iconset/icon_32x32.png > /dev/null
-    sips -z 64 64 logo.png --out Icon.iconset/icon_32x32@2x.png > /dev/null
-    sips -z 128 128 logo.png --out Icon.iconset/icon_128x128.png > /dev/null
-    sips -z 256 256 logo.png --out Icon.iconset/icon_128x128@2x.png > /dev/null
-    sips -z 256 256 logo.png --out Icon.iconset/icon_256x256.png > /dev/null
-    sips -z 512 512 logo.png --out Icon.iconset/icon_256x256@2x.png > /dev/null
-    sips -z 512 512 logo.png --out Icon.iconset/icon_512x512.png > /dev/null
-    sips -z 1024 1024 logo.png --out Icon.iconset/icon_512x512@2x.png > /dev/null
+    sips -z 16 16 icon.png --out Icon.iconset/icon_16x16.png > /dev/null
+    sips -z 32 32 icon.png --out Icon.iconset/icon_16x16@2x.png > /dev/null
+    sips -z 32 32 icon.png --out Icon.iconset/icon_32x32.png > /dev/null
+    sips -z 64 64 icon.png --out Icon.iconset/icon_32x32@2x.png > /dev/null
+    sips -z 128 128 icon.png --out Icon.iconset/icon_128x128.png > /dev/null
+    sips -z 256 256 icon.png --out Icon.iconset/icon_128x128@2x.png > /dev/null
+    sips -z 256 256 icon.png --out Icon.iconset/icon_256x256.png > /dev/null
+    sips -z 512 512 icon.png --out Icon.iconset/icon_256x256@2x.png > /dev/null
+    sips -z 512 512 icon.png --out Icon.iconset/icon_512x512.png > /dev/null
+    sips -z 1024 1024 icon.png --out Icon.iconset/icon_512x512@2x.png > /dev/null
     iconutil -c icns Icon.iconset -o Icon.icns
     rm -rf Icon.iconset
 fi

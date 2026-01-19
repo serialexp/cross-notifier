@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"image"
 	"log"
@@ -10,6 +11,9 @@ import (
 	"github.com/golang/freetype"
 	"golang.org/x/image/math/fixed"
 )
+
+//go:embed Hack-Regular.ttf
+var embeddedFontData []byte
 
 // GlyphInfo contains rendering information for a glyph
 type GlyphInfo struct {
@@ -416,16 +420,22 @@ func generateCharacterSet() []rune {
 	return chars
 }
 
-// LoadDefaultFont loads the default system font
-// On Linux: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-// On macOS: /Library/Fonts/Arial.ttf or system fonts
+// LoadDefaultFont loads the default font
+// First tries embedded Hack font, then falls back to system fonts
 func LoadDefaultFont() ([]byte, error) {
-	// Try common font locations
+	// Try embedded font first
+	if len(embeddedFontData) > 0 {
+		if _, err := freetype.ParseFont(embeddedFontData); err == nil {
+			log.Printf("Using embedded font: Hack-Regular.ttf")
+			return embeddedFontData, nil
+		}
+		log.Printf("Embedded font failed to parse, trying system fonts")
+	}
+
+	// Fall back to system fonts
 	fontPaths := []string{
-		"Hack-Regular.ttf",
 		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // Linux
 		"/Library/Fonts/Arial.ttf",                        // macOS
-		"/System/Library/Fonts/Helvetica.ttc",             // macOS
 		"C:\\Windows\\Fonts\\arial.ttf",                   // Windows
 		"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 	}

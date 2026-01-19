@@ -5,6 +5,7 @@ package main
 
 import (
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"time"
@@ -15,8 +16,17 @@ import (
 //go:embed tray.png
 var trayIconData []byte
 
+//go:embed tray-notification.png
+var trayIconNotificationData []byte
+
+// TrayIconBase64 returns the embedded tray icon as a base64-encoded PNG string
+func TrayIconBase64() string {
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(trayIconData)
+}
+
 var (
-	trayEnd func()
+	trayEnd             func()
+	trayHasNotification bool // tracks current icon state
 )
 
 // StartTray initializes the system tray for use with an external event loop.
@@ -59,8 +69,16 @@ func StartTray(onSettings func(), onNotifications func(), getConnectionCount fun
 					count := getNotificationCount()
 					if count == 0 {
 						mNotifications.SetTitle("Notifications")
+						if trayHasNotification {
+							systray.SetIcon(trayIconData)
+							trayHasNotification = false
+						}
 					} else {
 						mNotifications.SetTitle(fmt.Sprintf("Notifications (%d)", count))
+						if !trayHasNotification {
+							systray.SetIcon(trayIconNotificationData)
+							trayHasNotification = true
+						}
 					}
 				}
 				time.Sleep(2 * time.Second)
@@ -86,7 +104,8 @@ func StartTray(onSettings func(), onNotifications func(), getConnectionCount fun
 			}
 		}()
 	}, func() {
-		// onExit
+		// onExit - called when app terminates (e.g., dock Quit)
+		os.Exit(0)
 	})
 
 	trayEnd = end

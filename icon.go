@@ -12,11 +12,18 @@ import (
 	"image/png"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
 // loadIconFromBase64 decodes base64 image data and returns a scaled image.
+// Handles both raw base64 and data URI format (data:image/png;base64,...)
 func loadIconFromBase64(data string) (image.Image, error) {
+	// Strip data URI prefix if present
+	if idx := strings.Index(data, ";base64,"); idx != -1 {
+		data = data[idx+8:]
+	}
+
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return nil, fmt.Errorf("base64 decode: %w", err)
