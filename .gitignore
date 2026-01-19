@@ -5,7 +5,6 @@ cross-notifier
 *.app
 *.dmg
 dmg-temp/
-Icon.icns
 
 # IDE
 .idea/
