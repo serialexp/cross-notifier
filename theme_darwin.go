@@ -40,16 +40,6 @@ func refreshThemeIfStale() {
 	darkModeLastCheck = time.Now()
 }
 
-// forceRefreshTheme always checks the system theme.
-// Call this when opening the notification center.
-func forceRefreshTheme() {
-	darkModeCacheMu.Lock()
-	defer darkModeCacheMu.Unlock()
-
-	cachedDarkMode = checkDarkMode()
-	darkModeLastCheck = time.Now()
-}
-
 func checkDarkMode() bool {
 	cmd := exec.Command("defaults", "read", "-g", "AppleInterfaceStyle")
 	output, err := cmd.Output()

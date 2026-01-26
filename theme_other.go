@@ -14,7 +14,3 @@ func isDarkMode() bool {
 func refreshThemeIfStale() {
 	// No-op on non-macOS
 }
-
-func forceRefreshTheme() {
-	// No-op on non-macOS
-}

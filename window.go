@@ -4,12 +4,9 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
-
-var wmLastLog time.Time
 
 // WindowType identifies the type of window
 type WindowType int
@@ -213,18 +210,13 @@ func (wm *WindowManager) Run(renderFn func() error) error {
 				continue
 			}
 
-			tCtx := time.Now()
 			w.MakeContextCurrent()
-			dCtx := time.Since(tCtx)
 
 			width, height := w.GetSize()
 			mw.Renderer.Resize(width, height)
 
-			tBegin := time.Now()
 			mw.Renderer.BeginFrame()
-			dBegin := time.Since(tBegin)
 
-			tRender := time.Now()
 			// Call custom render function
 			if mw.OnRender != nil {
 				if err := mw.OnRender(); err != nil {
@@ -236,21 +228,10 @@ func (wm *WindowManager) Run(renderFn func() error) error {
 			if err := renderFn(); err != nil {
 				log.Printf("global render error: %v", err)
 			}
-			dRender := time.Since(tRender)
 
-			tEnd := time.Now()
 			mw.Renderer.EndFrame()
-			dEnd := time.Since(tEnd)
 
-			tSwap := time.Now()
 			w.SwapBuffers()
-			dSwap := time.Since(tSwap)
-
-			if time.Since(wmLastLog) > time.Second {
-				log.Printf("WM timing: ctx=%v begin=%v render=%v end=%v swap=%v",
-					dCtx, dBegin, dRender, dEnd, dSwap)
-				wmLastLog = time.Now()
-			}
 		}
 
 		// Remove closed windows

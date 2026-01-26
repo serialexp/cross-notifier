@@ -5,10 +5,16 @@ import (
 	"image"
 	"image/color"
 	"log"
+	"sync"
 	"unsafe"
 
 	"github.com/go-gl/gl/v2.1/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
+)
+
+var (
+	glInitOnce sync.Once
+	glInitErr  error
 )
 
 // Renderer manages OpenGL state and 2D drawing primitives
@@ -83,8 +89,11 @@ func ColorRGBA(c color.Color) Color {
 
 // NewRenderer initializes OpenGL and returns a renderer
 func NewRenderer(window *glfw.Window, width, height int, fontData []byte) (*Renderer, error) {
-	if err := gl.Init(); err != nil {
-		return nil, fmt.Errorf("failed to initialize OpenGL: %w", err)
+	glInitOnce.Do(func() {
+		glInitErr = gl.Init()
+	})
+	if glInitErr != nil {
+		return nil, fmt.Errorf("failed to initialize OpenGL: %w", glInitErr)
 	}
 
 	r := &Renderer{

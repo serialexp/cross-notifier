@@ -60,9 +60,11 @@ type CenterRenderer struct {
 	timeStringCache     map[int64]cachedTimeString
 	lastTimeStringFlush time.Time
 
-	// Slide-in animation
+	// Slide animation (in and out)
 	animationStart time.Time
 	slideOffset    float32
+	closing        bool
+	hadFocus       bool
 }
 
 type cachedTimeString struct {
@@ -111,23 +113,13 @@ func NewCenterRenderer(renderer *Renderer, window *glfw.Window, baseURL string, 
 
 // Render draws the notification center window each frame.
 func (cr *CenterRenderer) Render() error {
-	frameStart := time.Now()
-
 	// Delete textures that were queued for deletion in previous frames
 	cr.processPendingTextureDeletes()
 
-	t0 := time.Now()
 	touchCenterPoll()
 	cr.updateTheme()
-	tTheme := time.Since(t0)
-
-	t0 = time.Now()
 	cr.refreshNotifications()
-	tRefresh := time.Since(t0)
-
-	t0 = time.Now()
 	cr.loadPendingIcons()
-	tIcons := time.Since(t0)
 
 	width, height := cr.window.GetSize()
 	cr.windowHeight = height
@@ -135,8 +127,6 @@ func (cr *CenterRenderer) Render() error {
 
 	// Update slide animation
 	cr.updateSlideAnimation()
-
-	t0 = time.Now()
 
 	// Draw panel background offset by slide animation
 	panelX := cr.slideOffset
@@ -146,12 +136,9 @@ func (cr *CenterRenderer) Render() error {
 	headerBottom := cr.renderHeader(panelX, panelWidth)
 	cr.renderFPS(panelX, panelWidth)
 	headerBottom = cr.renderError(headerBottom, panelX, panelWidth)
-	tHeader := time.Since(t0)
 
-	t0 = time.Now()
 	listTop := headerBottom + float32(centerCardPadding)
 	cr.renderNotificationList(listTop, panelX, panelWidth, float32(height))
-	tList := time.Since(t0)
 
 	if cr.showConfirm {
 		cr.renderConfirmOverlay(panelX, panelWidth, float32(height))
@@ -160,27 +147,44 @@ func (cr *CenterRenderer) Render() error {
 	cr.prevMouseDown = cr.mouseDown
 	cr.widgets.EndFrame()
 
-	// Log timing every second
-	totalFrame := time.Since(frameStart)
-	if cr.fpsFrames == 0 {
-		log.Printf("Frame timing: total=%v theme=%v refresh=%v icons=%v header=%v list=%v",
-			totalFrame, tTheme, tRefresh, tIcons, tHeader, tList)
-	}
-
 	return nil
 }
 
 func (cr *CenterRenderer) updateSlideAnimation() {
-	elapsed := time.Since(cr.animationStart).Milliseconds()
-	if elapsed >= centerAnimationDurMs {
-		cr.slideOffset = 0
-		return
+	// Check for focus loss to trigger close animation
+	focused := cr.window.GetAttrib(glfw.Focused) == glfw.True
+	if focused {
+		cr.hadFocus = true
+	} else if cr.hadFocus && !cr.closing {
+		// Lost focus after having it - start closing
+		cr.closing = true
+		cr.animationStart = time.Now()
 	}
 
-	// Ease-out cubic: 1 - (1-t)^3
-	t := float64(elapsed) / float64(centerAnimationDurMs)
-	eased := 1 - math.Pow(1-t, 3)
-	cr.slideOffset = float32(centerWidth) * float32(1-eased)
+	elapsed := time.Since(cr.animationStart).Milliseconds()
+
+	if cr.closing {
+		// Slide out animation
+		if elapsed >= centerAnimationDurMs {
+			cr.slideOffset = float32(centerWidth)
+			cr.window.SetShouldClose(true)
+			return
+		}
+		// Ease-in cubic: t^3
+		t := float64(elapsed) / float64(centerAnimationDurMs)
+		eased := math.Pow(t, 3)
+		cr.slideOffset = float32(centerWidth) * float32(eased)
+	} else {
+		// Slide in animation
+		if elapsed >= centerAnimationDurMs {
+			cr.slideOffset = 0
+			return
+		}
+		// Ease-out cubic: 1 - (1-t)^3
+		t := float64(elapsed) / float64(centerAnimationDurMs)
+		eased := 1 - math.Pow(1-t, 3)
+		cr.slideOffset = float32(centerWidth) * float32(1-eased)
+	}
 }
 
 func (cr *CenterRenderer) renderFPS(panelX, panelWidth float32) {

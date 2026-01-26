@@ -85,9 +85,6 @@ func ShowCenterWindow(daemonPort string) error {
 	}
 	defer markCenterClosed()
 
-	// Refresh theme when opening center
-	forceRefreshTheme()
-
 	var baseURL string
 	store := notificationStore
 	if store == nil {
@@ -131,6 +128,8 @@ func OpenCenterWindow(daemonPort string) {
 
 	select {
 	case centerOpenCh <- daemonPort:
+		// Wake up the event loop immediately so it processes the channel
+		glfw.PostEmptyEvent()
 	default:
 	}
 }
@@ -139,9 +138,6 @@ func openCenterWindowInProcess(wm *WindowManager, daemonPort string) error {
 	if !markCenterOpen() {
 		return nil
 	}
-
-	// Refresh theme when opening center
-	forceRefreshTheme()
 
 	var baseURL string
 	store := notificationStore

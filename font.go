@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/golang/freetype"
 	"golang.org/x/image/math/fixed"
@@ -64,8 +65,21 @@ func LoadFontAtlas(fontPath string) (*FontAtlas, error) {
 	return CreateFontAtlas(data, 16) // 16px font size
 }
 
-// CreateFontAtlas creates a font atlas from raw font data
+var (
+	cachedFontAtlas  *FontAtlas
+	fontAtlasOnce    sync.Once
+	fontAtlasInitErr error
+)
+
+// CreateFontAtlas creates a font atlas from raw font data (cached after first call).
 func CreateFontAtlas(fontData []byte, fontSize int) (*FontAtlas, error) {
+	fontAtlasOnce.Do(func() {
+		cachedFontAtlas, fontAtlasInitErr = createFontAtlasUncached(fontData, fontSize)
+	})
+	return cachedFontAtlas, fontAtlasInitErr
+}
+
+func createFontAtlasUncached(fontData []byte, fontSize int) (*FontAtlas, error) {
 	ttf, err := freetype.ParseFont(fontData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse font: %w", err)
@@ -420,9 +434,22 @@ func generateCharacterSet() []rune {
 	return chars
 }
 
-// LoadDefaultFont loads the default font
-// First tries embedded Hack font, then falls back to system fonts
+var (
+	cachedFontData []byte
+	cachedFontErr  error
+	fontLoadOnce   sync.Once
+)
+
+// LoadDefaultFont loads the default font (cached after first call).
+// First tries embedded Hack font, then falls back to system fonts.
 func LoadDefaultFont() ([]byte, error) {
+	fontLoadOnce.Do(func() {
+		cachedFontData, cachedFontErr = loadDefaultFontUncached()
+	})
+	return cachedFontData, cachedFontErr
+}
+
+func loadDefaultFontUncached() ([]byte, error) {
 	// Try embedded font first
 	if len(embeddedFontData) > 0 {
 		if _, err := freetype.ParseFont(embeddedFontData); err == nil {
