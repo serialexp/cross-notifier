@@ -138,16 +138,40 @@ func (nr *NotificationRenderer) Render() error {
 	// Position window
 	nr.positionWindow()
 
+	// Check which card should handle clicks (front-to-back, first hovered wins)
+	clickHandlerIndex := -1
+	if nr.justClicked() {
+		for i := 0; i < len(visible); i++ {
+			n := visible[i]
+			scale := 1.0 - float32(i)*0.03
+			var cardWidth, cardHeight float32
+			if n.Expanded {
+				cardWidth = expandedCardWidth()
+				cardHeight = nr.expandedCardHeight(n, cardWidth)
+			} else {
+				cardWidth = float32(notificationW-2*padding) * scale
+				cardHeight = float32(notificationHeight(n)) * scale
+			}
+			windowW, _ := nr.window.GetSize()
+			xOffset := float32(windowW) - cardWidth - float32(padding)
+			yOffset := float32(i * stackPeek)
+			if pointInRect(nr.mouseX, nr.mouseY, xOffset, yOffset, cardWidth, cardHeight) {
+				clickHandlerIndex = i
+				break
+			}
+		}
+	}
+
 	// Render notifications back to front
 	for i := len(visible) - 1; i >= 0; i-- {
-		nr.renderNotificationCard(visible[i], i, len(visible))
+		nr.renderNotificationCard(visible[i], i, len(visible), i == clickHandlerIndex)
 	}
 
 	nr.prevMouseDown = nr.mouseDown
 	return nil
 }
 
-func (nr *NotificationRenderer) renderNotificationCard(n Notification, index int, total int) {
+func (nr *NotificationRenderer) renderNotificationCard(n Notification, index int, total int, canHandleClick bool) {
 	// Calculate card properties
 	scale := 1.0 - float32(index)*0.03
 	var cardWidth, cardHeight float32
@@ -208,7 +232,7 @@ func (nr *NotificationRenderer) renderNotificationCard(n Notification, index int
 		AllowDismissOnCard: true,
 		MouseX:             nr.mouseX,
 		MouseY:             nr.mouseY,
-		JustClicked:        nr.justClicked(),
+		JustClicked:        canHandleClick && nr.justClicked(),
 		BorderColor:        nr.statusBorderColor(n.Status),
 		GetActionState: func(idx int) ActionState {
 			state := GetActionState(n.ID, idx)
