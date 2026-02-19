@@ -53,7 +53,7 @@ func ShowSettingsWindowNew(initial *Config, isConnected func(string) bool) Setti
 		mw.Renderer.Resize(width, height)
 		mw.Renderer.BeginFrame()
 
-		if err := sr.Render(); err != nil {
+		if _, err := sr.Render(); err != nil {
 			log.Printf("Settings render error: %v", err)
 		}
 
@@ -212,7 +212,7 @@ func (sr *SettingsRenderer) Done() bool {
 }
 
 // Render draws the settings window.
-func (sr *SettingsRenderer) Render() error {
+func (sr *SettingsRenderer) Render() (bool, error) {
 	width, height := sr.window.GetSize()
 	sr.widgets.UpdateMouse(sr.window)
 
@@ -357,7 +357,7 @@ func (sr *SettingsRenderer) Render() error {
 	DrawDeferredDropdowns(sr.widgets)
 
 	sr.widgets.EndFrame()
-	return nil
+	return true, nil
 }
 
 func (sr *SettingsRenderer) renderServerRow(x, y, contentW float32, index int, toDelete *int) float32 {

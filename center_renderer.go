@@ -112,7 +112,7 @@ func NewCenterRenderer(renderer *Renderer, window *glfw.Window, baseURL string, 
 }
 
 // Render draws the notification center window each frame.
-func (cr *CenterRenderer) Render() error {
+func (cr *CenterRenderer) Render() (bool, error) {
 	// Delete textures that were queued for deletion in previous frames
 	cr.processPendingTextureDeletes()
 
@@ -147,7 +147,7 @@ func (cr *CenterRenderer) Render() error {
 	cr.prevMouseDown = cr.mouseDown
 	cr.widgets.EndFrame()
 
-	return nil
+	return true, nil
 }
 
 func (cr *CenterRenderer) updateSlideAnimation() {

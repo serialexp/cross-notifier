@@ -34,7 +34,7 @@ type ManagedWindow struct {
 	Renderer *Renderer
 	OnClose  func()
 	OnResize func(width, height int)
-	OnRender func() error
+	OnRender func() (needsRedraw bool, err error)
 }
 
 // NewWindowManager creates a window manager
@@ -151,7 +151,7 @@ func (wm *WindowManager) GetManagedWindow(w *glfw.Window) *ManagedWindow {
 }
 
 // SetWindowRenderCallback sets the render function for a window
-func (wm *WindowManager) SetWindowRenderCallback(w *glfw.Window, cb func() error) {
+func (wm *WindowManager) SetWindowRenderCallback(w *glfw.Window, cb func() (bool, error)) {
 	wm.windowsMu.Lock()
 	defer wm.windowsMu.Unlock()
 	if mw, ok := wm.windows[w]; ok {
@@ -189,8 +189,15 @@ func (wm *WindowManager) Run(renderFn func() error) error {
 	wm.running = true
 	defer func() { wm.running = false }()
 
+	needsAnimation := true // first frame always polls
 	for wm.running && len(wm.windows) > 0 {
-		glfw.PollEvents()
+		if needsAnimation {
+			glfw.PollEvents()
+		} else {
+			glfw.WaitEventsTimeout(0.5)
+		}
+
+		needsAnimation = false
 
 		// Render all windows
 		wm.windowsMu.RLock()
@@ -219,8 +226,12 @@ func (wm *WindowManager) Run(renderFn func() error) error {
 
 			// Call custom render function
 			if mw.OnRender != nil {
-				if err := mw.OnRender(); err != nil {
+				redraw, err := mw.OnRender()
+				if err != nil {
 					log.Printf("render error: %v", err)
+				}
+				if redraw {
+					needsAnimation = true
 				}
 			}
 

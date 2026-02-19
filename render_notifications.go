@@ -78,8 +78,9 @@ func (nr *NotificationRenderer) expandedCardHeight(n Notification, cardWidth flo
 	return height
 }
 
-// Render renders the notification window
-func (nr *NotificationRenderer) Render() error {
+// Render renders the notification window. Returns true if continuous
+// rendering is needed (visible notifications or active animations).
+func (nr *NotificationRenderer) Render() (bool, error) {
 	// Process pending texture deletions on the GL thread
 	nr.processPendingDeletes()
 
@@ -103,7 +104,7 @@ func (nr *NotificationRenderer) Render() error {
 	if len(visible) == 0 {
 		nr.window.SetSize(1, 1)
 		nr.window.SetPos(-100, -100)
-		return nil
+		return false, nil
 	}
 
 	// Update animations
@@ -168,7 +169,7 @@ func (nr *NotificationRenderer) Render() error {
 	}
 
 	nr.prevMouseDown = nr.mouseDown
-	return nil
+	return true, nil
 }
 
 func (nr *NotificationRenderer) renderNotificationCard(n Notification, index int, total int, canHandleClick bool) {

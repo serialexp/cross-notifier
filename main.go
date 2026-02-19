@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-gl/glfw/v3.3/glfw"
+
 	"github.com/fsnotify/fsnotify"
 	xdraw "golang.org/x/image/draw"
 )
@@ -247,6 +249,9 @@ func addNotification(n Notification) {
 	}
 
 	notifications = append(notifications, n)
+
+	// Wake the render loop from WaitEventsTimeout
+	glfw.PostEmptyEvent()
 }
 
 func dismissNotification(id int64) {
