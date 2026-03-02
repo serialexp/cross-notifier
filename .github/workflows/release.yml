@@ -30,6 +30,7 @@ jobs:
             libasound2-dev \
             libgtk-3-dev \
             libx11-dev \
+            libxdo-dev \
             libxkbcommon-dev
 
       - name: Get version
@@ -74,6 +75,7 @@ jobs:
             libasound2-dev \
             libgtk-3-dev \
             libx11-dev \
+            libxdo-dev \
             libxkbcommon-dev
 
       - name: Get version

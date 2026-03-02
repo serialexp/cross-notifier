@@ -32,6 +32,7 @@ jobs:
             libasound2-dev \
             libgtk-3-dev \
             libx11-dev \
+            libxdo-dev \
             libxkbcommon-dev
 
       - name: Run tests
@@ -58,6 +59,7 @@ jobs:
             libasound2-dev \
             libgtk-3-dev \
             libx11-dev \
+            libxdo-dev \
             libxkbcommon-dev
 
       - name: Build daemon
