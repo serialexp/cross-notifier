@@ -1,76 +1,76 @@
-# Current Task: Remove giu/imgui Dependency - COMPLETED
+# Current Task: Rust Daemon Rewrite - Phase 1
 
-## Summary
-The giu/imgui dependency has been fully removed. The new GLFW+OpenGL rendering system is now the only rendering backend.
+## Status: Phase 1 near-complete — notifications, rendering, tray, icons, click-to-dismiss
 
-## ✅ Completed
+## What's Done
 
-### Settings Window Migration
-- Created `widgets.go` with custom UI widgets (Button, Checkbox, TextInput, Dropdown)
-- Created `settings_renderer.go` with new settings window using GLFW+OpenGL renderer
-- Added `ShowSettingsWindowNew()` function that works with WindowManager
-- Updated `main.go` to call new settings window
-- Cleaned `settings.go` to only keep shared types/functions (removed all giu code)
+The Rust daemon in `daemon/` receives notifications and renders them with text:
 
-### Notification Center Improvements
-- Made center window borderless and transparent (like notification popups)
-- Positioned at right edge spanning full screen height (respects menu bar)
-- Added 200ms ease-out slide-in animation
-- Added config settings for `respectWorkAreaTop` and `respectWorkAreaBottom`
+- **Windowing**: winit `ApplicationHandler`, borderless transparent window, top-right positioning
+- **Rendering**: wgpu 24 with batched 2D renderer (solid rects, textured quads, WGSL shaders)
+- **Font**: `fontdue`-based glyph atlas, embedded Hack-Regular.ttf, text measurement/truncation/wrapping
+- **Cards**: Notification cards with status color bar, icon, title, 2-line message, source text
+- **Networking**: EventLoopProxy-based event flow (async -> main thread, wakes event loop)
+  - axum HTTP server on `:9876` (POST /notify, GET /status)
+  - tokio-tungstenite WebSocket client with Bearer auth, exponential backoff
+- **Config**: serde JSON matching Go format, loads from same config path
+- **Protocol**: Full WebSocket message envelope (notification, action, resolved)
+- **Queue**: Notification lifecycle (add, dismiss, expiry pruning)
+- **Window sizing**: Dynamic height based on notification count
+- **System tray**: tray-icon + muda, Settings/Quit menu, icon swaps on notification state
+- **Icons**: base64/file (sync) and URL (async) icon loading, 48x48 scaling, GPU texture upload
+- **Click-to-dismiss**: Hit testing on topmost card, left-click dismisses
 
-### Dead Code Removal (Final Cleanup)
-- Removed `github.com/AllenDang/giu` import
-- Removed `github.com/AllenDang/cimgui-go/imgui` import
-- Converted theme struct from `imgui.Vec4` to `Color` type
-- Removed dead variables: `wnd`, `textures`, `pendingIcons`, `hoveredCards`, `successAnimations`
-- Removed dead functions:
-  - `loop()` - old giu render loop
-  - `renderStackedNotification()` - old giu notification renderer
-  - `renderActionButtons()` - old giu button renderer
-  - `renderActionButton()` - old giu single button renderer
-  - `truncateToWidth()` - imgui-based text truncation
-  - `truncateToLines()` - imgui-based multiline truncation
-  - `statusBorderColor()` - returned imgui.Vec4
-  - `loadPendingIcons()` - used giu texture loading
-  - `updateWindowSize()` - used old wnd variable
-  - `positionWindow()` - used old wnd variable
-- Removed all `g.Update()` calls
-- Removed `colorFromVec4()` from render_notifications.go
-- Ran `go mod tidy` to remove unused dependencies
-- Binary built and tests pass
+### Key architecture decision
+Switched from mpsc channel to `EventLoopProxy::send_event()` for async->main communication. The mpsc approach didn't wake the winit event loop when the window was hidden, causing notifications to be silently dropped.
 
-## Architecture (Final)
+## Files
 
 ```
-Single-Process Daemon (cross-notifier)
-├── WindowManager (window.go)
-│   ├── Notification Window (borderless, GLFW+OpenGL)
-│   ├── Settings Window (decorated, GLFW+OpenGL)
-│   └── Center Window (borderless panel, GLFW+OpenGL)
-├── NotificationRenderer (render_notifications.go)
-├── CenterRenderer (center_renderer.go)
-├── SettingsRenderer (settings_renderer.go)
-├── NotificationCard (notification_card.go)
-├── Widgets (widgets.go)
-├── HTTP Server (:9876)
-└── WebSocket Clients (to remote servers)
+daemon/
+  Cargo.toml
+  fonts/Hack-Regular.ttf
+  shaders/quad.wgsl
+  src/
+    main.rs         - winit event loop, App struct, render_frame()
+    app.rs          - AppEvent enum
+    card.rs         - Notification card layout and rendering
+    client.rs       - WebSocket client (EventLoopProxy)
+    config.rs       - Config types (Go-compatible JSON)
+    font.rs         - fontdue glyph atlas, text measurement
+    gpu.rs          - wgpu device/surface init (PostMultiplied alpha on macOS)
+    notification.rs - Notification data model, queue
+    protocol.rs     - WebSocket message types
+    renderer.rs     - Batched 2D renderer (solid, textured, text batch)
+    server.rs       - axum HTTP server (EventLoopProxy)
+    tray.rs         - System tray (tray-icon + muda, Settings/Quit menu)
+    icon.rs         - Icon loading (base64, file, URL), scaling, GPU upload
 ```
 
-## Files Changed
-- `main.go` - Removed all giu/imgui code
-- `render_notifications.go` - Removed imgui import, uses Color type directly
-- `widgets.go` - NEW: Custom UI widgets
-- `settings_renderer.go` - NEW: Settings window renderer
-- `settings.go` - Cleaned: Removed giu, kept types
-- `center.go` - Modified: Work area config, positioning
-- `center_renderer.go` - Modified: Slide animation
-- `notification_card.go` - NEW: Shared card rendering
-- `config.go` - Modified: Added CenterPanelConfig
-- `window.go` - Modified: Center window hints
+## What's Next
 
-## Binary Size
-- 20MB (significantly smaller without imgui/giu linked)
+1. **macOS platform** - Click-through for transparent areas
+2. **Phase 2**: Notification center (store, panel, slide animation, scroll, dismiss)
 
----
-Last updated: After final giu/imgui cleanup
-Status: COMPLETE
+## Build & Test
+
+```bash
+cd daemon && cargo build
+cargo run  # Listens on :9876
+curl -X POST http://localhost:9876/notify -H "Content-Type: application/json" \
+  -d '{"title":"Test","message":"Hello world","status":"info","duration":5}'
+```
+
+## Architecture
+
+```
+Main Thread (winit event loop)
+  ├── App state (notifications, renderer, GPU, font atlas)
+  ├── Receives AppEvent via EventLoopProxy (wakes event loop)
+  └── Renders via wgpu
+
+Tokio Runtime (background)
+  ├── HTTP Server (axum, :9876)
+  ├── WebSocket Clients (per server, reconnecting)
+  └── Send AppEvent via EventLoopProxy::send_event()
+```

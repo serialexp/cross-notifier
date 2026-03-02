@@ -1,0 +1,71 @@
+[package]
+name = "cross-notifier-daemon"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cross-notifier"
+path = "src/main.rs"
+
+[dependencies]
+# Windowing & rendering
+winit = "0.30"
+wgpu = "24"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+
+# Async runtime & networking
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Image handling
+image = "0.25"
+base64 = "0.22"
+
+# Audio
+rodio = "0.20"
+
+# System tray
+tray-icon = "0.19"
+muda = "0.16"
+
+# File dialogs (Phase 3, but declare now)
+rfd = "0.15"
+
+# egui for settings UI
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = { version = "0.31", default-features = false, features = ["clipboard", "links"] }
+
+# Font rendering
+fontdue = "0.9"
+
+# Config & platform
+dirs = "6"
+notify = "7"
+
+# Error handling & logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Misc
+open = "5"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

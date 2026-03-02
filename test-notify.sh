@@ -4,10 +4,18 @@
 
 set -e
 
+# Save caller's env vars (take priority over .env)
+_CALLER_SERVER="$CROSS_NOTIFIER_SERVER"
+_CALLER_SECRET="$CROSS_NOTIFIER_SECRET"
+
 # Load .env file if it exists
 if [ -f .env ]; then
     export $(grep -v '^#' .env | xargs)
 fi
+
+# Caller's env vars override .env
+if [ -n "$_CALLER_SERVER" ]; then CROSS_NOTIFIER_SERVER="$_CALLER_SERVER"; fi
+if [ -n "$_CALLER_SECRET" ]; then CROSS_NOTIFIER_SECRET="$_CALLER_SECRET"; fi
 
 COUNT="${1:-10}"
 
@@ -18,7 +26,7 @@ if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-# Server URL and secret (from .env or env vars)
+# Server URL and secret
 SERVER_URL="${CROSS_NOTIFIER_SERVER:-http://localhost:9876}"
 SECRET="${CROSS_NOTIFIER_SECRET:-}"
 

@@ -5,35 +5,29 @@ default:
 # Set up development environment
 setup:
     git config core.hooksPath .githooks
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint
     @echo "Development environment configured!"
 
-# Build the desktop daemon
+# Build the desktop daemon (Rust)
 build:
-    go build -o cross-notifier .
+    cargo build --release --manifest-path daemon/Cargo.toml
 
-# Run the desktop daemon locally
+# Run the desktop daemon locally (Rust)
 dev:
-    go run .
+    cargo run --manifest-path daemon/Cargo.toml
 
-# Run tests
+# Run daemon tests (Rust)
 test:
-    go test ./...
+    cargo test --manifest-path daemon/Cargo.toml
 
-# Run linters (same as CI)
+# Run Rust lints
 lint:
-    @echo "Checking formatting..."
-    @gofmt -s -l . | grep -v '^vendor/' | (! grep .) || (echo "Run 'just fmt' to fix" && exit 1)
-    @echo "Running go vet..."
-    go vet -unsafeptr=false ./...
-    @echo "Running golangci-lint..."
-    golangci-lint run --timeout=5m
+    cargo clippy --manifest-path daemon/Cargo.toml -- -D warnings
 
-# Format code
+# Format Rust code
 fmt:
-    gofmt -s -w .
+    cargo fmt --manifest-path daemon/Cargo.toml
 
-# Build server-only binary (no GUI dependencies)
+# Build server-only binary (Go, no GUI dependencies)
 server:
     CGO_ENABLED=0 go build -o server ./cmd/server
 
@@ -60,4 +54,4 @@ stress-remote count="10":
 # Clean build artifacts
 clean:
     rm -f cross-notifier server
-    rm -rf CrossNotifier.app dmg-temp
+    rm -rf CrossNotifier.app dmg-temp daemon/target

@@ -37,8 +37,8 @@ elif [ -f "icon.png" ]; then
     rm -rf Icon.iconset
 fi
 
-echo "Building Go binary..."
-MACOSX_DEPLOYMENT_TARGET=11.0 go build -ldflags "-X main.Version=${VERSION}" -o cross-notifier .
+echo "Building Rust daemon..."
+MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --manifest-path daemon/Cargo.toml
 
 echo "Creating app bundle structure..."
 rm -rf "${APP_DIR}"
@@ -46,7 +46,7 @@ mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
 
 echo "Copying binary..."
-cp cross-notifier "${MACOS_DIR}/"
+cp daemon/target/release/cross-notifier "${MACOS_DIR}/"
 
 echo "Copying icon..."
 if [ -f "Icon.icns" ]; then

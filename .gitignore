@@ -1,6 +1,9 @@
 # Binary
 cross-notifier
 
+# Rust build artifacts
+target/
+
 # macOS build artifacts
 *.app
 *.dmg
