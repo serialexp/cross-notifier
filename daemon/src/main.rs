@@ -223,10 +223,12 @@ impl App {
         let (pos_x, pos_y) = if let Some(mon) = &monitor {
             let size = mon.size();
             let pos = mon.position();
+            let scale = mon.scale_factor();
+            let phys_w = (NOTIFICATION_W as f64 * scale) as i32;
             // Top-right corner with padding
             (
-                pos.x + size.width as i32 - NOTIFICATION_W as i32 - 16,
-                pos.y + 40, // Below menu bar on macOS
+                pos.x + size.width as i32 - phys_w - (16.0 * scale) as i32,
+                pos.y + (40.0 * scale) as i32, // Below menu bar on macOS
             )
         } else {
             (100, 100)
@@ -421,10 +423,12 @@ impl App {
         let (pos_x, pos_y, height) = if let Some(mon) = &monitor {
             let size = mon.size();
             let pos = mon.position();
+            let scale = mon.scale_factor();
+            let phys_w = (center_w as f64 * scale) as i32;
             (
-                pos.x + size.width as i32 - center_w as i32,
-                pos.y + 40, // Below menu bar on macOS
-                (size.height - 80).min(700), // Leave room for dock
+                pos.x + size.width as i32 - phys_w,
+                pos.y + (40.0 * scale) as i32, // Below menu bar on macOS
+                ((size.height as f64 / scale) as u32).saturating_sub(80).min(700), // Leave room for dock (logical)
             )
         } else {
             (100, 100, 500)
