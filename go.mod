@@ -9,7 +9,6 @@ require (
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20250301202403-da16c1255728
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/golangci/golangci-lint v1.64.8
-	github.com/google/uuid v1.6.0
 	github.com/gopxl/beep/v2 v2.1.1
 	github.com/gorilla/websocket v1.5.3
 	golang.org/x/image v0.21.0

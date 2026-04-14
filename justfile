@@ -9,27 +9,27 @@ setup:
 
 # Build the desktop daemon (Rust)
 build:
-    cargo build --release --manifest-path daemon/Cargo.toml
+    cargo build --release -p cross-notifier-daemon
 
 # Run the desktop daemon locally (Rust)
 dev:
-    cargo run --manifest-path daemon/Cargo.toml
+    cargo run -p cross-notifier-daemon
 
-# Run daemon tests (Rust)
+# Run all workspace tests (Rust)
 test:
-    cargo test --manifest-path daemon/Cargo.toml
+    cargo test --workspace
 
-# Run Rust lints
+# Run Rust lints across the workspace
 lint:
-    cargo clippy --manifest-path daemon/Cargo.toml -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
-# Format Rust code
+# Format all Rust code
 fmt:
-    cargo fmt --manifest-path daemon/Cargo.toml
+    cargo fmt --all
 
-# Build server-only binary (Go, no GUI dependencies)
+# Build server-only binary (Rust, no GUI dependencies)
 server:
-    CGO_ENABLED=0 go build -o server ./cmd/server
+    cargo build --release -p cross-notifier-server
 
 # Build macOS app bundle and DMG
 macos:
@@ -53,5 +53,6 @@ stress-remote count="10":
 
 # Clean build artifacts
 clean:
-    rm -f cross-notifier server
-    rm -rf CrossNotifier.app dmg-temp daemon/target
+    rm -rf target
+    rm -f cross-notifier
+    rm -rf CrossNotifier.app dmg-temp

@@ -1,33 +1,49 @@
-# ABOUTME: Dockerfile for the notification server.
-# ABOUTME: Builds a minimal image for headless server deployment.
+# Dockerfile for the headless notification server.
+# Builds the cross-notifier-server Rust binary on a distroless-ish runtime.
 
-FROM golang:1.25-alpine AS builder
+FROM rust:1.94-slim AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# Copy go mod files first for layer caching
-COPY go.mod go.sum ./
-RUN go mod download
+# Workspace manifests first for better layer caching. Copy every crate's
+# Cargo.toml so `cargo fetch` sees the full dependency graph.
+COPY Cargo.toml Cargo.lock ./
+COPY core/Cargo.toml core/Cargo.toml
+COPY server/Cargo.toml server/Cargo.toml
+COPY daemon/Cargo.toml daemon/Cargo.toml
 
-# Copy source
-COPY . .
+# Create empty src trees so cargo can resolve targets without the real code.
+RUN mkdir -p core/src server/src daemon/src \
+    && echo "fn main() {}" > server/src/main.rs \
+    && echo "" > core/src/lib.rs \
+    && echo "fn main() {}" > daemon/src/main.rs \
+    && cargo fetch --locked
 
-# Build the server binary (no CGO needed for server-only)
-RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server
+# Real sources.
+COPY core ./core
+COPY server ./server
 
-# Runtime image
-FROM alpine:latest
+# Build only the server crate — skip the daemon (needs graphics libs).
+RUN cargo build --release -p cross-notifier-server --locked
 
-RUN apk --no-cache add ca-certificates && \
-    adduser -D -u 1000 notifier
+# Runtime
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 1000 -m notifier
 
 WORKDIR /app
-COPY --from=builder /build/server .
+COPY --from=builder /build/target/release/cross-notifier-server /app/cross-notifier-server
 
 USER notifier
 
 EXPOSE 9876
-
 ENV CROSS_NOTIFIER_PORT=9876
 
-ENTRYPOINT ["/app/server"]
+ENTRYPOINT ["/app/cross-notifier-server"]

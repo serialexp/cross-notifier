@@ -1,0 +1,16 @@
+[package]
+name = "cross-notifier-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "cross-notifier-server"
+path = "src/main.rs"
+
+[dependencies]
+cross-notifier-core = { path = "../core" }
+tokio = { workspace = true }
+axum = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

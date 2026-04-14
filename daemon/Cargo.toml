@@ -1,13 +1,15 @@
 [package]
 name = "cross-notifier-daemon"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [[bin]]
 name = "cross-notifier"
 path = "src/main.rs"
 
 [dependencies]
+cross-notifier-core = { path = "../core" }
+
 # Windowing & rendering
 winit = "0.30"
 wgpu = "24"

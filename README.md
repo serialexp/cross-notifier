@@ -198,6 +198,8 @@ Authorization: Bearer <shared-secret>
 | `duration` | int | No | 5 | Seconds before auto-dismiss |
 | `actions` | array | No | - | Action buttons (see Actions section) |
 | `exclusive` | bool | No | false | Server coordinates actions across all clients |
+| `wait` | int | No | 25 | Seconds POST blocks waiting for a client response. Implies `exclusive`. |
+| `maxWait` | int | No | = `wait` | Total lifetime (seconds). After this, the server broadcasts `expired`. |
 
 *At least one of `title` or `message` is required.
 
@@ -379,6 +381,51 @@ When Bart clicks "Approve":
 - Server executes POST to `https://api.example.com/deploy`
 - All connected clients see the notification dismissed
 - Server logs: `Client 'Bart' executing action 'Approve' on notification <id>`
+
+### Waiting for a Response (long polling)
+
+Senders that need to know *which* action was taken can ask the server to
+hold the HTTP response open until a client resolves the notification.
+
+Set `wait` (seconds the initial POST blocks) and optionally `maxWait`
+(total lifetime). Any non-zero value implies `exclusive`.
+
+**Flow:**
+
+1. `POST /notify` with `wait` / `maxWait` — server holds the connection.
+2. If a client resolves within `wait` seconds → **200 OK** with a
+   `ResolvedMessage` body: `{id, resolvedBy, actionLabel, success, error?}`.
+3. If `wait` elapses but the notification is still live → **202 Accepted**
+   with `{id, status: "pending"}` and a `Location: /notify/{id}/wait`
+   header. Sender falls back to polling.
+4. `GET /notify/{id}/wait?timeout=N` — blocks up to `N` seconds.
+   Same three response shapes.
+5. If `maxWait` elapses without resolution → **410 Gone** with
+   `{id}`, plus an `expired` WebSocket broadcast to all clients so
+   their UI stops offering the action buttons.
+
+**Defaults are friendly to reverse proxies** (25s default for `wait`),
+but no ceiling is enforced — if you're talking to localhost or own the
+proxy, set `wait` to whatever you want.
+
+```bash
+curl -X POST http://server:9876/notify \
+  -H "Authorization: Bearer mysecret" \
+  -d '{
+    "title": "Deploy to Production",
+    "message": "v1.2.3 — approve?",
+    "wait": 25,
+    "maxWait": 300,
+    "actions": [
+      {"label": "Approve", "url": "https://api.example.com/deploy", "method": "POST"},
+      {"label": "Reject",  "url": "https://api.example.com/reject", "method": "POST"}
+    ]
+  }'
+```
+
+### OpenAPI
+
+The server exposes its spec at `GET /openapi.yaml` and `GET /openapi.json` (no auth required).
 
 ### Non-Exclusive vs Exclusive
 

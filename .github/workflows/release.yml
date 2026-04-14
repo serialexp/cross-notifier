@@ -11,9 +11,6 @@ on:
         required: false
         default: 'v0.0.0-dev'
 
-env:
-  GO_VERSION: '1.25.4'
-
 jobs:
   build-linux:
     runs-on: ubuntu-latest
@@ -43,13 +40,13 @@ jobs:
           fi
 
       - name: Build
-        run: cargo build --release --manifest-path daemon/Cargo.toml
+        run: cargo build --release -p cross-notifier-daemon
 
       - name: Package
         run: |
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
-          cp daemon/target/release/cross-notifier .
+          cp target/release/cross-notifier .
           tar -czvf dist/cross-notifier-${VERSION}-linux-amd64.tar.gz \
             cross-notifier \
             README.md
@@ -88,13 +85,13 @@ jobs:
           fi
 
       - name: Build
-        run: cargo build --release --manifest-path daemon/Cargo.toml
+        run: cargo build --release -p cross-notifier-daemon
 
       - name: Package
         run: |
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
-          cp daemon/target/release/cross-notifier .
+          cp target/release/cross-notifier .
           tar -czvf dist/cross-notifier-${VERSION}-linux-amd64-compat.tar.gz \
             cross-notifier \
             README.md
@@ -134,7 +131,8 @@ jobs:
       - name: Build
         env:
           MACOSX_DEPLOYMENT_TARGET: '11.0'
-        run: cargo build --release --manifest-path daemon/Cargo.toml --target ${{ matrix.target }}
+        run: cargo build --release -p cross-notifier-daemon --target ${{ matrix.target }}
+
 
       - name: Create app bundle
         run: |
@@ -145,7 +143,7 @@ jobs:
           mkdir -p "${APP_DIR}/Contents/MacOS"
           mkdir -p "${APP_DIR}/Contents/Resources"
 
-          cp daemon/target/${{ matrix.target }}/release/cross-notifier "${APP_DIR}/Contents/MacOS/"
+          cp target/${{ matrix.target }}/release/cross-notifier "${APP_DIR}/Contents/MacOS/"
 
           if [ -f "Icon.icns" ]; then
             cp Icon.icns "${APP_DIR}/Contents/Resources/"
@@ -224,14 +222,14 @@ jobs:
           fi
 
       - name: Build
-        run: cargo build --release --manifest-path daemon/Cargo.toml
+        run: cargo build --release -p cross-notifier-daemon
 
       - name: Package
         shell: bash
         run: |
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
-          cp daemon/target/release/cross-notifier.exe .
+          cp target/release/cross-notifier.exe .
           7z a -tzip "dist/cross-notifier-${VERSION}-windows-amd64.zip" \
             cross-notifier.exe \
             README.md
@@ -248,16 +246,22 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            goarch: amd64
+            target: x86_64-unknown-linux-gnu
           - arch: arm64
-            goarch: arm64
+            target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: ${{ env.GO_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation toolchain
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Get version
         id: version
@@ -270,16 +274,15 @@ jobs:
 
       - name: Build server
         env:
-          CGO_ENABLED: 0
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
-          go build -o server ./cmd/server
+          cargo build --release --target ${{ matrix.target }} -p cross-notifier-server
 
       - name: Package
         run: |
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
+          cp target/${{ matrix.target }}/release/cross-notifier-server server
           tar -czvf dist/cross-notifier-server-${VERSION}-linux-${{ matrix.arch }}.tar.gz \
             server \
             README.md

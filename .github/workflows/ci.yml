@@ -6,11 +6,7 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  GO_VERSION: '1.25.4'
-
 jobs:
-  # Rust daemon CI
   rust-test:
     name: Rust Test
     strategy:
@@ -36,7 +32,7 @@ jobs:
             libxkbcommon-dev
 
       - name: Run tests
-        run: cargo test --manifest-path daemon/Cargo.toml
+        run: cargo test --workspace
 
   rust-build:
     name: Rust Build
@@ -63,82 +59,33 @@ jobs:
             libxkbcommon-dev
 
       - name: Build daemon
-        run: cargo build --manifest-path daemon/Cargo.toml
-
-  # Go server CI
-  go-lint:
-    name: Go Lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Check formatting
-        run: |
-          if [ -n "$(gofmt -s -l ./cmd/server)" ]; then
-            echo "Go code is not formatted:"
-            gofmt -s -d ./cmd/server
-            exit 1
-          fi
-
-      - name: Run go vet
-        run: go vet ./cmd/server/...
-
-  go-test:
-    name: Go Test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Run tests
-        run: go test -v ./cmd/server/...
-
-  go-build:
-    name: Go Build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
+        run: cargo build -p cross-notifier-daemon
 
       - name: Build server
-        env:
-          CGO_ENABLED: 0
-        run: go build -v ./cmd/server
+        run: cargo build -p cross-notifier-server
 
-  go-build-server-multiarch:
-    name: Go Build Server (Multi-arch)
+  rust-build-server-multiarch:
+    name: Server Build (Multi-arch)
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64, arm64]
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: ${{ env.GO_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build server
         env:
-          CGO_ENABLED: 0
-          GOOS: linux
-          GOARCH: ${{ matrix.arch }}
-        run: go build -v ./cmd/server
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --target ${{ matrix.target }} -p cross-notifier-server

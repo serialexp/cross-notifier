@@ -1162,6 +1162,23 @@ impl ApplicationHandler<AppEvent> for App {
                     self.update_tray_icon();
                 }
             }
+            AppEvent::NotificationExpired(expired) => {
+                info!("Notification {} expired", expired.notification_id);
+                // TODO: keep card visible and swap action buttons for a
+                // disabled "Timed out" pill. For now we dismiss so stale
+                // buttons don't remain live. See TODO.md.
+                if let Some(local_id) =
+                    self.queue.find_by_server_id(&expired.notification_id)
+                {
+                    let had_more = self.queue.visible().len() > 1;
+                    self.queue.dismiss(local_id);
+                    if had_more && !self.queue.is_empty() {
+                        self.dismiss_anim_start = Some(Instant::now());
+                    }
+                    self.needs_redraw = true;
+                    self.update_tray_icon();
+                }
+            }
             AppEvent::IconLoaded {
                 notification_id,
                 image,

@@ -2,7 +2,7 @@
 // Bridges the async tokio world (WebSocket, HTTP) with the synchronous winit event loop.
 
 use crate::notification::NotificationPayload;
-use crate::protocol::ResolvedMessage;
+use crate::protocol::{ExpiredMessage, ResolvedMessage};
 
 /// Events sent from async tasks to the winit event loop.
 pub enum AppEvent {
@@ -20,6 +20,11 @@ pub enum AppEvent {
 
     /// Exclusive notification was resolved by another client.
     NotificationResolved(ResolvedMessage),
+
+    /// Exclusive notification's maxWait elapsed without resolution.
+    /// TODO: keep card visible with a disabled "Timed out" pill instead
+    /// of dismissing — see TODO.md.
+    NotificationExpired(ExpiredMessage),
 
     /// Icon fetched asynchronously (from URL), ready for GPU upload.
     IconLoaded {
@@ -54,6 +59,9 @@ impl std::fmt::Debug for AppEvent {
             }
             Self::NotificationResolved(r) => {
                 write!(f, "NotificationResolved({})", r.notification_id)
+            }
+            Self::NotificationExpired(e) => {
+                write!(f, "NotificationExpired({})", e.notification_id)
             }
             Self::IconLoaded { notification_id, .. } => {
                 write!(f, "IconLoaded({})", notification_id)

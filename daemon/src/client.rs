@@ -11,7 +11,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::app::AppEvent;
 use crate::notification::NotificationPayload;
-use crate::protocol::{Message, MessageType, ResolvedMessage};
+use crate::protocol::{ExpiredMessage, Message, MessageType, ResolvedMessage};
 
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -193,6 +193,16 @@ fn handle_message(
                 }
                 Err(e) => {
                     error!("Failed to parse resolved message from {}: {}", server_label, e);
+                }
+            }
+        }
+        MessageType::Expired => {
+            match serde_json::from_value::<ExpiredMessage>(msg.data) {
+                Ok(expired) => {
+                    let _ = event_proxy.send_event(AppEvent::NotificationExpired(expired));
+                }
+                Err(e) => {
+                    error!("Failed to parse expired message from {}: {}", server_label, e);
                 }
             }
         }

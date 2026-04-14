@@ -16,6 +16,7 @@ pub enum MessageType {
     Notification,
     Action,
     Resolved,
+    Expired,
 }
 
 /// Action sent from client to server when user clicks a notification action button.
@@ -37,6 +38,14 @@ pub struct ResolvedMessage {
     pub success: bool,
     #[serde(default)]
     pub error: String,
+}
+
+/// Expired broadcast from server when a notification's maxWait elapses
+/// without any client resolving it. Actions should no longer be offered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpiredMessage {
+    pub notification_id: String,
 }
 
 impl Message {

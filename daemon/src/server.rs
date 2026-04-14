@@ -1,11 +1,17 @@
 // Local HTTP server for receiving notifications and querying status.
-// Listens on :9876 by default, accepts POST /notify, GET /status, and center endpoints.
+// Listens on :9876 by default. The /notify + /notify/{id}/wait + /ws
+// endpoints are delegated to cross-notifier-core so local and remote
+// share the same exclusive/wait/long-poll logic; /status and /center/*
+// are daemon-specific.
 
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{delete, get},
     Json, Router,
+};
+use cross_notifier_core::{
+    CoreState, OutboundMessage, Subscriber, router as core_router,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -16,6 +22,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::app::AppEvent;
 use crate::notification::NotificationPayload;
+use crate::protocol::{ExpiredMessage, ResolvedMessage};
 use crate::store::SharedStore;
 
 pub type ConnectionMap = Arc<RwLock<HashMap<String, bool>>>;
@@ -42,19 +49,26 @@ pub async fn run_server(
     store: SharedStore,
 ) {
     let state = AppState {
-        event_proxy: Some(event_proxy),
+        event_proxy: Some(event_proxy.clone()),
         connections,
         store,
     };
 
-    let app = Router::new()
-        .route("/notify", post(handle_notify))
+    // Core with auth disabled (localhost only) — gives us the same
+    // /notify, /notify/{id}/wait, /ws, /health, /openapi.* endpoints
+    // the remote server exposes, with identical wait/maxWait behavior.
+    let core = CoreState::new("");
+    spawn_local_bridge(core.clone(), event_proxy).await;
+
+    let daemon_routes = Router::new()
         .route("/status", get(handle_status))
         .route("/center", get(handle_center_list))
         .route("/center", delete(handle_center_clear))
         .route("/center/{id}", delete(handle_center_dismiss))
         .route("/center/count", get(handle_center_count))
         .with_state(state);
+
+    let app = core_router(core).merge(daemon_routes);
 
     let addr = format!("0.0.0.0:{}", port);
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -71,15 +85,68 @@ pub async fn run_server(
     }
 }
 
-async fn handle_notify(
-    State(state): State<AppState>,
-    Json(payload): Json<NotificationPayload>,
-) -> StatusCode {
-    state.send_event(AppEvent::IncomingNotification {
-        server_label: "local".to_string(),
-        payload,
+/// Registers an in-process subscriber that forwards core's outbound
+/// messages into the winit event loop as the appropriate AppEvent. The
+/// daemon then reacts exactly as it would for a WebSocket-delivered
+/// notification from a remote server.
+async fn spawn_local_bridge(core: CoreState, event_proxy: EventLoopProxy<AppEvent>) {
+    let (sub, mut rx) = Subscriber::new("local");
+    core.add_subscriber(sub).await;
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            let ev = match msg {
+                OutboundMessage::Notification(n) => AppEvent::IncomingNotification {
+                    server_label: "local".to_string(),
+                    payload: core_notification_to_payload(n),
+                },
+                OutboundMessage::Resolved(r) => {
+                    AppEvent::NotificationResolved(ResolvedMessage {
+                        notification_id: r.notification_id,
+                        resolved_by: r.resolved_by,
+                        action_label: r.action_label,
+                        success: r.success,
+                        error: r.error,
+                    })
+                }
+                OutboundMessage::Expired(e) => {
+                    AppEvent::NotificationExpired(ExpiredMessage {
+                        notification_id: e.notification_id,
+                    })
+                }
+            };
+            if event_proxy.send_event(ev).is_err() {
+                break;
+            }
+        }
     });
-    StatusCode::OK
+}
+
+fn core_notification_to_payload(n: cross_notifier_core::Notification) -> NotificationPayload {
+    NotificationPayload {
+        id: n.id,
+        source: n.source,
+        title: n.title,
+        message: n.message,
+        status: n.status,
+        icon_data: n.icon_data,
+        icon_href: n.icon_href,
+        icon_path: n.icon_path,
+        duration: n.duration as i32,
+        actions: n
+            .actions
+            .into_iter()
+            .map(|a| crate::notification::Action {
+                label: a.label,
+                url: a.url,
+                method: a.method,
+                headers: a.headers,
+                body: a.body,
+                open: a.open,
+            })
+            .collect(),
+        exclusive: n.exclusive,
+        store_on_expire: n.store_on_expire,
+    }
 }
 
 async fn handle_status(

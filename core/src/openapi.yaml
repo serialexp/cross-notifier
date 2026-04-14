@@ -1,0 +1,259 @@
+openapi: 3.1.0
+info:
+  title: CrossNotifier Server API
+  version: "1.0.0"
+  description: |
+    HTTP API for the CrossNotifier server. Accepts notifications from
+    senders and broadcasts them to connected WebSocket clients.
+
+    Senders can optionally request a synchronous response by setting
+    `wait` / `maxWait` on the notification — the server will hold the
+    HTTP connection open until a client resolves the notification or
+    the timeout elapses.
+
+servers:
+  - url: http://localhost:9876
+    description: Local server (default port)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: notify
+    description: Send notifications and await responses.
+  - name: meta
+    description: Server metadata.
+
+paths:
+  /notify:
+    post:
+      tags: [notify]
+      summary: Send a notification
+      description: |
+        Broadcasts the notification to all connected WebSocket clients.
+
+        If `wait` or `maxWait` is set the notification is marked
+        exclusive and the response is held open until a client resolves
+        it or the `wait` window elapses, at which point the caller
+        receives a pending response and should long-poll
+        `/notify/{id}/wait`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Notification"
+      responses:
+        "200":
+          description: Notification was resolved by a client within `wait` seconds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolvedMessage"
+        "202":
+          description: |
+            Non-exclusive fire-and-forget accepted (no body), OR the
+            short `wait` window elapsed and the notification is still
+            live — body is a pending response and the `Location` header
+            points at the long-poll endpoint.
+          headers:
+            Location:
+              description: Long-poll URL (only present when body is a PendingResponse).
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410":
+          description: Notification's `maxWait` elapsed before any client resolved it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpiredMessage" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /notify/{id}/wait:
+    get:
+      tags: [notify]
+      summary: Long-poll for a pending notification's resolution
+      description: |
+        Continues waiting for a previously-submitted exclusive
+        notification whose initial POST returned `202 pending`.
+        The connection blocks for up to `timeout` seconds.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: timeout
+          in: query
+          required: false
+          description: Seconds to block this request. Defaults to 25.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Resolved by a client.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResolvedMessage" }
+        "202":
+          description: Still pending — caller should poll again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingResponse" }
+        "410":
+          description: Notification expired or is unknown (already cleaned up).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpiredMessage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /health:
+    get:
+      tags: [meta]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Server is up.
+          content:
+            text/plain:
+              schema: { type: string, example: ok }
+
+  /openapi.yaml:
+    get:
+      tags: [meta]
+      summary: This document (YAML)
+      security: []
+      responses:
+        "200":
+          description: OpenAPI spec as YAML.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /openapi.json:
+    get:
+      tags: [meta]
+      summary: This document (JSON)
+      security: []
+      responses:
+        "200":
+          description: OpenAPI spec as JSON, converted from the YAML source at startup.
+          content:
+            application/json:
+              schema: { type: object }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "Shared secret, sent as `Authorization: Bearer <secret>`."
+
+  responses:
+    BadRequest:
+      description: Invalid request body.
+    Unauthorized:
+      description: Missing or invalid bearer token.
+    MethodNotAllowed:
+      description: Wrong HTTP method for this endpoint.
+
+  schemas:
+    Notification:
+      type: object
+      required: [source]
+      properties:
+        id:
+          type: string
+          description: Optional caller-assigned ID. Server assigns a UUID if omitted on exclusive notifications.
+        source:
+          type: string
+          description: Origin of the notification (logical, not an address).
+        title:
+          type: string
+          description: At least one of `title` or `message` is required.
+        message:
+          type: string
+        status:
+          type: string
+          enum: [info, success, warning, error]
+        iconData:
+          type: string
+          description: Base64-encoded image.
+        iconHref:
+          type: string
+          format: uri
+          description: Server fetches this URL and resizes to 48x48.
+        duration:
+          type: integer
+          description: Seconds before auto-dismiss on the client. 0/omitted = never.
+        exclusive:
+          type: boolean
+          description: Coordinates actions across all clients — first action wins.
+        wait:
+          type: integer
+          minimum: 0
+          description: |
+            Seconds the POST blocks waiting for a client response. Any
+            non-zero value implies `exclusive`. Defaults to 25 when
+            unset on an exclusive notification.
+        maxWait:
+          type: integer
+          minimum: 0
+          description: |
+            Total lifetime in seconds. After this, the server broadcasts
+            `expired` over WebSocket and cleans up. Defaults to `wait`.
+        actions:
+          type: array
+          items: { $ref: "#/components/schemas/Action" }
+
+    Action:
+      type: object
+      required: [label, url]
+      properties:
+        label: { type: string }
+        url: { type: string, format: uri }
+        method:
+          type: string
+          default: GET
+          enum: [GET, POST, PUT, PATCH, DELETE]
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        body: { type: string }
+        open:
+          type: boolean
+          description: If true, the URL is opened in a browser instead of called over HTTP.
+
+    ResolvedMessage:
+      type: object
+      required: [id, resolvedBy, actionLabel, success]
+      properties:
+        id: { type: string }
+        resolvedBy:
+          type: string
+          description: X-Client-Name of the client that resolved the notification.
+        actionLabel: { type: string }
+        success: { type: boolean }
+        error:
+          type: string
+          description: Present when `success` is false.
+
+    ExpiredMessage:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+
+    PendingResponse:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum: [pending]
