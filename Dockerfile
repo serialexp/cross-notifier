@@ -3,10 +3,6 @@
 
 FROM rust:1.94-slim AS builder
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /build
 
 # Workspace manifests first for better layer caching. Copy every crate's
@@ -34,7 +30,7 @@ RUN cargo build --release -p cross-notifier-server --locked
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -u 1000 -m notifier
 
