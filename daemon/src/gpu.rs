@@ -74,20 +74,7 @@ impl GpuContext {
             wgpu::PresentMode::Fifo
         };
 
-        // Pick the best alpha mode for transparency support
-        let alpha_mode = if surface_caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
-        {
-            wgpu::CompositeAlphaMode::PostMultiplied
-        } else if surface_caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
-        {
-            wgpu::CompositeAlphaMode::PreMultiplied
-        } else {
-            surface_caps.alpha_modes[0]
-        };
+        let alpha_mode = pick_alpha_mode(&surface_caps);
         tracing::info!("Alpha mode: {:?}", alpha_mode);
 
         let config = wgpu::SurfaceConfiguration {
@@ -134,13 +121,30 @@ impl GpuContext {
         // Reuse the same instance that created the device
         let surface = self.instance.create_surface(window)?;
 
+        // Query this surface's own capabilities — different windows may support
+        // different alpha modes (e.g. the popup supports PreMultiplied but the
+        // settings window may only support Opaque/Inherit).
+        let adapter = self
+            .instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            });
+        let alpha_mode = if let Some(adapter) = pollster::block_on(adapter) {
+            let caps = surface.get_capabilities(&adapter);
+            pick_alpha_mode(&caps)
+        } else {
+            self.alpha_mode
+        };
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: self.surface_format,
             width,
             height,
             present_mode: self.present_mode,
-            alpha_mode: self.alpha_mode,
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -162,5 +166,22 @@ impl WindowSurface {
             self.config.height = height;
             self.surface.configure(&ctx.device, &self.config);
         }
+    }
+}
+
+/// Pick the best alpha mode for transparency, preferring premultiplied compositing.
+fn pick_alpha_mode(caps: &wgpu::SurfaceCapabilities) -> wgpu::CompositeAlphaMode {
+    if caps
+        .alpha_modes
+        .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+    {
+        wgpu::CompositeAlphaMode::PostMultiplied
+    } else if caps
+        .alpha_modes
+        .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+    {
+        wgpu::CompositeAlphaMode::PreMultiplied
+    } else {
+        caps.alpha_modes[0]
     }
 }
