@@ -106,8 +106,24 @@ async fn connect_and_run(
     server_label: &str,
     event_proxy: &EventLoopProxy<AppEvent>,
 ) -> anyhow::Result<()> {
+    // Parse the URL so we can derive the Host header. tungstenite fills in
+    // handshake headers automatically when given a bare URL, but because we
+    // attach custom headers (Authorization, X-Client-Name) we pass a full
+    // Request — which means WE are responsible for every required header,
+    // including Host. Omitting it causes tungstenite to reject the request
+    // with "Missing, duplicated or incorrect header host".
+    let uri: tungstenite::http::Uri = url.parse().map_err(|e| {
+        anyhow::anyhow!("invalid server URL {:?}: {}", url, e)
+    })?;
+    let host = uri
+        .authority()
+        .ok_or_else(|| anyhow::anyhow!("server URL {:?} has no host", url))?
+        .as_str()
+        .to_string();
+
     let request = tungstenite::http::Request::builder()
         .uri(url)
+        .header("Host", host)
         .header("Authorization", format!("Bearer {}", secret))
         .header("X-Client-Name", client_name)
         .header("Connection", "Upgrade")
