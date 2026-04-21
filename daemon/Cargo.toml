@@ -39,6 +39,11 @@ rodio = "0.20"
 tray-icon = "0.19"
 muda = "0.16"
 
+# GTK for system tray on Linux (tray-icon requires a GTK event loop)
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+glib = "0.18"
+
 # File dialogs (Phase 3, but declare now)
 rfd = "0.15"
 
