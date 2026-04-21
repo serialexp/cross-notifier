@@ -39,11 +39,6 @@ rodio = "0.20"
 tray-icon = "0.19"
 muda = "0.16"
 
-# GTK for system tray on Linux (tray-icon requires a GTK event loop)
-[target.'cfg(target_os = "linux")'.dependencies]
-gtk = "0.18"
-glib = "0.18"
-
 # File dialogs (Phase 3, but declare now)
 rfd = "0.15"
 
@@ -70,6 +65,14 @@ open = "5"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+
+# GTK for system tray on Linux (tray-icon requires a GTK event loop).
+# NOTE: this target-specific table MUST stay below all regular [dependencies]
+# entries — a TOML table header terminates the previous table, so any deps
+# declared after it would silently become linux-only.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+glib = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
