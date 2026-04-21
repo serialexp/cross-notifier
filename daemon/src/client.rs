@@ -66,25 +66,31 @@ async fn client_loop(
             return;
         }
 
-        match connect_and_run(&url, &secret, &client_name, &server_label, &event_proxy).await {
-            Ok(()) => {
-                info!("Disconnected from {}", server_label);
-                backoff = MIN_BACKOFF;
-            }
-            Err(e) => {
-                if was_connected {
-                    tokio::time::sleep(GRACE_PERIOD).await;
-                    warn!("Connection to {} lost: {}", server_label, e);
-                } else {
-                    warn!("Failed to connect to {}: {}", server_label, e);
+        let err_msg: Option<String> =
+            match connect_and_run(&url, &secret, &client_name, &server_label, &event_proxy).await {
+                Ok(()) => {
+                    info!("Disconnected from {}", server_label);
+                    backoff = MIN_BACKOFF;
+                    // Clean disconnect (server closed, shutdown, etc.) — no error to surface.
+                    None
                 }
-            }
-        }
+                Err(e) => {
+                    let formatted = format!("{:#}", e);
+                    if was_connected {
+                        tokio::time::sleep(GRACE_PERIOD).await;
+                        warn!("Connection to {} lost: {}", server_label, formatted);
+                    } else {
+                        warn!("Failed to connect to {}: {}", server_label, formatted);
+                    }
+                    Some(formatted)
+                }
+            };
 
         was_connected = true;
         let _ = event_proxy.send_event(AppEvent::ConnectionStatus {
             server_url: url.clone(),
             connected: false,
+            error: err_msg,
         });
 
         tokio::select! {
@@ -142,6 +148,7 @@ async fn connect_and_run(
     let _ = event_proxy.send_event(AppEvent::ConnectionStatus {
         server_url: url.to_string(),
         connected: true,
+        error: None,
     });
 
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);

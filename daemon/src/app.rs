@@ -13,9 +13,14 @@ pub enum AppEvent {
     },
 
     /// Connection status changed for a server.
+    /// `error` is `Some` when a disconnect was caused by a failure
+    /// (e.g. auth rejection, DNS lookup failure, connection refused) —
+    /// the UI surfaces it so the user knows *why* it won't connect.
+    /// On successful connect, `error` is always `None`.
     ConnectionStatus {
         server_url: String,
         connected: bool,
+        error: Option<String>,
     },
 
     /// Exclusive notification was resolved by another client.
@@ -44,6 +49,9 @@ pub enum AppEvent {
     /// Config file changed on disk — reload it.
     ConfigChanged,
 
+    /// User requested manual reconnect for a specific server.
+    ReconnectServer { url: String },
+
     /// Request to quit the application.
     Quit,
 }
@@ -54,8 +62,14 @@ impl std::fmt::Debug for AppEvent {
             Self::IncomingNotification { server_label, .. } => {
                 write!(f, "IncomingNotification({})", server_label)
             }
-            Self::ConnectionStatus { server_url, connected } => {
-                write!(f, "ConnectionStatus({}, {})", server_url, connected)
+            Self::ConnectionStatus { server_url, connected, error } => {
+                write!(
+                    f,
+                    "ConnectionStatus({}, {}{})",
+                    server_url,
+                    connected,
+                    error.as_deref().map(|e| format!(", err={}", e)).unwrap_or_default()
+                )
             }
             Self::NotificationResolved(r) => {
                 write!(f, "NotificationResolved({})", r.notification_id)
@@ -70,6 +84,7 @@ impl std::fmt::Debug for AppEvent {
             Self::CenterDirty => write!(f, "CenterDirty"),
             Self::OpenSettings => write!(f, "OpenSettings"),
             Self::ConfigChanged => write!(f, "ConfigChanged"),
+            Self::ReconnectServer { url } => write!(f, "ReconnectServer({})", url),
             Self::Quit => write!(f, "Quit"),
         }
     }

@@ -40,7 +40,7 @@ use font::FontAtlas;
 use gpu::{GpuContext, WindowSurface};
 use notification::{NotificationPayload, NotificationQueue};
 use renderer::Renderer2D;
-use server::ConnectionMap;
+use server::{ConnectionMap, ConnectionState};
 use store::SharedStore;
 use tray::TrayState;
 
@@ -753,7 +753,7 @@ impl App {
         };
 
         // Snapshot connection status for settings display
-        let connection_status: HashMap<String, bool> = {
+        let connection_status: HashMap<String, ConnectionState> = {
             let connections = self.connections.clone();
             self._runtime.block_on(async {
                 let map = connections.read().await;
@@ -766,6 +766,8 @@ impl App {
             gpu,
             &self.config,
             &connection_status,
+            self.connections.clone(),
+            self.event_proxy.clone(),
         );
 
         self.settings = Some(settings);
@@ -858,6 +860,51 @@ impl App {
             }
 
             info!("Reconnected {} servers", self.config.servers.len());
+        }
+    }
+
+    /// Manually reconnect a single server by dropping its client handle
+    /// and spawning a fresh one. The handles vector is parallel to
+    /// `self.config.servers`, so we find the index by URL.
+    fn reconnect_server(&mut self, url: &str) {
+        let Some(idx) = self.config.servers.iter().position(|s| s.url == url) else {
+            tracing::warn!("Reconnect requested for unknown server: {}", url);
+            return;
+        };
+        let srv = self.config.servers[idx].clone();
+        info!("Manual reconnect requested for {}", srv.label);
+
+        // Mark disconnected immediately so the indicator reflects the drop.
+        // Clear any stale error — user is retrying, so don't show old failures
+        // until the new attempt produces its own.
+        let connections = self.connections.clone();
+        let url_owned = srv.url.clone();
+        self._runtime.block_on(async {
+            let mut map = connections.write().await;
+            map.insert(
+                url_owned,
+                ConnectionState {
+                    connected: false,
+                    last_error: None,
+                },
+            );
+        });
+
+        // Drop old handle (triggers shutdown oneshot, cancelling the WS task)
+        // before spawning the new one, so both aren't racing to report status.
+        let new_handle = self._runtime.block_on(async {
+            client::spawn_client(
+                srv.url.clone(),
+                srv.secret.clone(),
+                self.config.name.clone(),
+                srv.label.clone(),
+                self.event_proxy.clone(),
+            )
+        });
+        self.client_handles[idx] = new_handle;
+
+        if let Some(settings) = &self.settings {
+            settings.window.request_redraw();
         }
     }
 
@@ -1136,14 +1183,27 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::ConnectionStatus {
                 server_url,
                 connected,
+                error,
             } => {
                 let connections = self.connections.clone();
+                let url_for_map = server_url.clone();
+                let error_for_map = error.clone();
                 self._runtime.block_on(async {
                     let mut map = connections.write().await;
-                    map.insert(server_url.clone(), connected);
+                    map.insert(
+                        url_for_map,
+                        ConnectionState {
+                            connected,
+                            last_error: if connected { None } else { error_for_map },
+                        },
+                    );
                 });
                 let status = if connected { "connected" } else { "disconnected" };
                 info!("{} {}", server_url, status);
+                // Nudge the settings window to repaint so its indicator reflects the new status.
+                if let Some(settings) = &self.settings {
+                    settings.window.request_redraw();
+                }
             }
             AppEvent::NotificationResolved(resolved) => {
                 info!(
@@ -1211,6 +1271,9 @@ impl ApplicationHandler<AppEvent> for App {
                         tracing::warn!("Failed to reload config: {}", e);
                     }
                 }
+            }
+            AppEvent::ReconnectServer { url } => {
+                self.reconnect_server(&url);
             }
             AppEvent::Quit => {
                 event_loop.exit();

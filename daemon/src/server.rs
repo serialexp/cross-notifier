@@ -25,7 +25,16 @@ use crate::notification::NotificationPayload;
 use crate::protocol::{ExpiredMessage, ResolvedMessage};
 use crate::store::SharedStore;
 
-pub type ConnectionMap = Arc<RwLock<HashMap<String, bool>>>;
+/// Live connection state for a single server, exposed to the UI.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ConnectionState {
+    pub connected: bool,
+    /// Most recent connection error. Cleared on successful connect.
+    /// Retained while disconnected so the UI can show *why*.
+    pub last_error: Option<String>,
+}
+
+pub type ConnectionMap = Arc<RwLock<HashMap<String, ConnectionState>>>;
 
 #[derive(Clone)]
 struct AppState {
@@ -153,7 +162,12 @@ async fn handle_status(
     State(state): State<AppState>,
 ) -> Json<HashMap<String, bool>> {
     let connections = state.connections.read().await;
-    Json(connections.clone())
+    Json(
+        connections
+            .iter()
+            .map(|(k, v)| (k.clone(), v.connected))
+            .collect(),
+    )
 }
 
 // --- Center endpoints ---

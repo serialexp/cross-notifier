@@ -6,12 +6,14 @@ use std::sync::Arc;
 
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes};
 
+use crate::app::AppEvent;
 use crate::autostart;
 use crate::config::{CenterPanelConfig, Config, NotificationRule, RuleAction, RulesConfig, Server};
 use crate::gpu::{GpuContext, WindowSurface};
+use crate::server::{ConnectionMap, ConnectionState};
 use crate::sound;
 
 // ── Dropdown option lists ──────────────────────────────────────────────
@@ -32,6 +34,8 @@ struct ServerEntry {
     url: String,
     secret: String,
     connected: bool,
+    /// Most recent connection error (when disconnected). Shown inline and as a tooltip.
+    last_error: Option<String>,
 }
 
 struct RuleEntry {
@@ -60,18 +64,22 @@ struct SettingsState {
 }
 
 impl SettingsState {
-    fn from_config(config: &Config, connection_status: &HashMap<String, bool>) -> Self {
+    fn from_config(
+        config: &Config,
+        connection_status: &HashMap<String, ConnectionState>,
+    ) -> Self {
         let servers: Vec<ServerEntry> = config
             .servers
             .iter()
-            .map(|s| ServerEntry {
-                label: s.label.clone(),
-                url: s.url.clone(),
-                secret: s.secret.clone(),
-                connected: connection_status
-                    .get(&s.url)
-                    .copied()
-                    .unwrap_or(false),
+            .map(|s| {
+                let st = connection_status.get(&s.url);
+                ServerEntry {
+                    label: s.label.clone(),
+                    url: s.url.clone(),
+                    secret: s.secret.clone(),
+                    connected: st.map(|s| s.connected).unwrap_or(false),
+                    last_error: st.and_then(|s| s.last_error.clone()),
+                }
             })
             .collect();
 
@@ -230,6 +238,8 @@ pub struct SettingsWindow {
     egui_renderer: egui_wgpu::Renderer,
     state: SettingsState,
     result: Option<SettingsResult>,
+    connections: ConnectionMap,
+    event_proxy: EventLoopProxy<AppEvent>,
 }
 
 impl SettingsWindow {
@@ -237,7 +247,9 @@ impl SettingsWindow {
         event_loop: &ActiveEventLoop,
         gpu: &GpuContext,
         config: &Config,
-        connection_status: &HashMap<String, bool>,
+        connection_status: &HashMap<String, ConnectionState>,
+        connections: ConnectionMap,
+        event_proxy: EventLoopProxy<AppEvent>,
     ) -> Self {
         let attrs = WindowAttributes::default()
             .with_title("Cross-Notifier Settings")
@@ -291,6 +303,28 @@ impl SettingsWindow {
             egui_renderer,
             state,
             result: None,
+            connections,
+            event_proxy,
+        }
+    }
+
+    /// Refresh connection status flags from the live connection map.
+    /// Non-blocking: if the lock is contended (unlikely), we keep previous values
+    /// and will pick them up next frame.
+    fn sync_connection_status(&mut self) {
+        if let Ok(map) = self.connections.try_read() {
+            for entry in &mut self.state.servers {
+                match map.get(&entry.url) {
+                    Some(st) => {
+                        entry.connected = st.connected;
+                        entry.last_error = st.last_error.clone();
+                    }
+                    None => {
+                        entry.connected = false;
+                        entry.last_error = None;
+                    }
+                }
+            }
         }
     }
 
@@ -305,14 +339,17 @@ impl SettingsWindow {
 
     /// Full egui render cycle.
     pub fn render(&mut self, gpu: &GpuContext) {
+        self.sync_connection_status();
+
         let raw_input = self.egui_state.take_egui_input(&self.window);
 
         // Take state out to avoid borrow conflict with egui_ctx.run()
         let mut state = std::mem::take(&mut self.state);
         let mut result = self.result.take();
 
+        let event_proxy = self.event_proxy.clone();
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            draw_settings_ui(ctx, &mut state, &mut result);
+            draw_settings_ui(ctx, &mut state, &mut result, &event_proxy);
         });
 
         self.state = state;
@@ -414,6 +451,7 @@ fn draw_settings_ui(
     ctx: &egui::Context,
     state: &mut SettingsState,
     result: &mut Option<SettingsResult>,
+    event_proxy: &EventLoopProxy<AppEvent>,
 ) {
     egui::CentralPanel::default().show(ctx, |ui| {
         // Fixed bottom buttons
@@ -427,6 +465,9 @@ fn draw_settings_ui(
                 if ui.button("Cancel").clicked() {
                     *result = Some(SettingsResult::Cancel);
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
+                });
             });
             ui.add_space(4.0);
         });
@@ -446,7 +487,7 @@ fn draw_settings_ui(
             ui.separator();
             ui.add_space(8.0);
 
-            draw_servers(ui, state);
+            draw_servers(ui, state, event_proxy);
 
             ui.add_space(16.0);
             ui.separator();
@@ -473,43 +514,90 @@ fn draw_settings_ui(
     });
 }
 
-fn draw_servers(ui: &mut egui::Ui, state: &mut SettingsState) {
+fn draw_servers(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    event_proxy: &EventLoopProxy<AppEvent>,
+) {
     ui.label("Notification Servers:");
     ui.add_space(4.0);
 
     let mut to_remove: Option<usize> = None;
 
     for i in 0..state.servers.len() {
-        ui.horizontal(|ui| {
-            // Connection indicator
-            let color = if state.servers[i].connected {
-                egui::Color32::from_rgb(51, 204, 76)
-            } else {
-                egui::Color32::from_rgb(128, 128, 128)
-            };
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-            ui.painter().circle_filled(rect.center(), 5.0, color);
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                // Connection indicator:
+                //   green  = connected
+                //   red    = disconnected with an error (something's wrong)
+                //   gray   = disconnected cleanly / never attempted
+                let color = if state.servers[i].connected {
+                    egui::Color32::from_rgb(51, 204, 76)
+                } else if state.servers[i].last_error.is_some() {
+                    egui::Color32::from_rgb(220, 80, 80)
+                } else {
+                    egui::Color32::from_rgb(128, 128, 128)
+                };
+                let (rect, indicator) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 5.0, color);
+                // Hover tooltip explains status (and surfaces the error).
+                let tooltip = if state.servers[i].connected {
+                    "Connected".to_string()
+                } else if let Some(err) = &state.servers[i].last_error {
+                    format!("Connection failed: {}", err)
+                } else {
+                    "Not connected".to_string()
+                };
+                indicator.on_hover_text(tooltip);
 
-            ui.label("Label:");
-            let label_edit = egui::TextEdit::singleline(&mut state.servers[i].label)
-                .desired_width(70.0)
-                .hint_text("Work");
-            ui.add(label_edit);
+                ui.label("Label:");
+                let label_edit = egui::TextEdit::singleline(&mut state.servers[i].label)
+                    .desired_width(70.0)
+                    .hint_text("Work");
+                ui.add(label_edit);
 
-            ui.label("URL:");
-            let url_edit = egui::TextEdit::singleline(&mut state.servers[i].url)
-                .desired_width(180.0)
-                .hint_text("ws://host:9876/ws");
-            ui.add(url_edit);
+                ui.label("URL:");
+                let url_edit = egui::TextEdit::singleline(&mut state.servers[i].url)
+                    .desired_width(180.0)
+                    .hint_text("ws://host:9876/ws");
+                ui.add(url_edit);
 
-            ui.label("Secret:");
-            let secret_edit = egui::TextEdit::singleline(&mut state.servers[i].secret)
-                .desired_width(100.0)
-                .password(true);
-            ui.add(secret_edit);
+                ui.label("Secret:");
+                let secret_edit = egui::TextEdit::singleline(&mut state.servers[i].secret)
+                    .desired_width(100.0)
+                    .password(true);
+                ui.add(secret_edit);
 
-            if ui.button("X").clicked() {
-                to_remove = Some(i);
+                // Reconnect button — disabled if URL is empty (nothing to connect to).
+                let url = state.servers[i].url.clone();
+                let can_reconnect = !url.is_empty();
+                if ui
+                    .add_enabled(can_reconnect, egui::Button::new("Reconnect"))
+                    .on_hover_text("Drop the current connection and reconnect immediately")
+                    .clicked()
+                {
+                    let _ = event_proxy.send_event(AppEvent::ReconnectServer { url });
+                }
+
+                if ui.button("X").clicked() {
+                    to_remove = Some(i);
+                }
+            });
+
+            // Inline error text under the row, only when disconnected and we
+            // know *why*. Colored to match the red indicator so the link is obvious.
+            if !state.servers[i].connected {
+                if let Some(err) = &state.servers[i].last_error {
+                    ui.horizontal(|ui| {
+                        // Left gutter to line up under the edit fields, not the indicator.
+                        ui.add_space(18.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 80, 80),
+                            format!("⚠ {}", err),
+                        );
+                    });
+                }
             }
         });
     }
@@ -525,6 +613,7 @@ fn draw_servers(ui: &mut egui::Ui, state: &mut SettingsState) {
             url: String::new(),
             secret: String::new(),
             connected: false,
+            last_error: None,
         });
     }
 }
@@ -887,6 +976,7 @@ mod tests {
             url: String::new(),
             secret: String::new(),
             connected: false,
+            last_error: None,
         });
 
         let result = state.to_config();
