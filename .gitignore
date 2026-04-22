@@ -18,6 +18,16 @@ dmg-temp/
 # OS
 .DS_Store
 
+# iOS — xcodegen regenerates the project on demand, so committing it
+# adds noise and merge conflicts without benefit. Same goes for build
+# output and per-user Xcode state.
+ios/*.xcodeproj
+ios/*.xcworkspace
+ios/build/
+ios/DerivedData/
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+
 # Claude Code local settings
 .claude/settings.local.json
 .env

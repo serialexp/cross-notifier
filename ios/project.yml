@@ -1,0 +1,115 @@
+# Xcodegen spec for the Cross Notifier iOS client.
+#
+# Regenerate with `xcodegen generate` after editing this file.
+# The generated .xcodeproj is committed for convenience but can always
+# be rebuilt from scratch.
+
+name: CrossNotifier
+
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  # Xcode complains if no dev team is set; leave blank so each developer
+  # picks their own in Signing & Capabilities.
+  bundleIdPrefix: com.serialexp
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    # Automatic signing — user sets the team once in Xcode and both
+    # targets inherit it.
+    CODE_SIGN_STYLE: Automatic
+    SUPPORTS_MACCATALYST: "NO"
+
+targets:
+  CrossNotifier:
+    type: application
+    platform: iOS
+    sources:
+      - path: CrossNotifier
+    info:
+      path: CrossNotifier/Info.plist
+      properties:
+        # CFBundleName follows PRODUCT_NAME (no space, so
+        # xcodebuild / BUNDLE_LOADER paths stay shell-safe);
+        # CFBundleDisplayName is what users see on the home screen.
+        CFBundleDisplayName: Cross Notifier
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIBackgroundModes:
+          - remote-notification
+        # Prefer Dark mode parity with the desktop daemon, but let the
+        # user's system setting win.
+        UIUserInterfaceStyle: Automatic
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.serialexp.crossnotifier
+        # Binary / module name — no space so BUNDLE_LOADER and shell
+        # paths stay sane. The friendly "Cross Notifier" shows up as
+        # CFBundleDisplayName on the home screen.
+        PRODUCT_NAME: CrossNotifier
+        PRODUCT_MODULE_NAME: CrossNotifier
+        CODE_SIGN_ENTITLEMENTS: CrossNotifier/CrossNotifier.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: "YES"
+    dependencies:
+      - target: CrossNotifierServiceExtension
+        embed: true
+        codeSign: true
+
+  CrossNotifierServiceExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CrossNotifierServiceExtension
+    info:
+      path: CrossNotifierServiceExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Cross Notifier Service
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.serialexp.crossnotifier.NotificationService
+        PRODUCT_NAME: CrossNotifierServiceExtension
+        CODE_SIGN_ENTITLEMENTS: CrossNotifierServiceExtension/CrossNotifierServiceExtension.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: "YES"
+
+  CrossNotifierTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: CrossNotifierTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.serialexp.crossnotifier.tests
+    # xcodegen wires BUNDLE_LOADER / TEST_HOST automatically when the
+    # test target depends on the host app.
+    dependencies:
+      - target: CrossNotifier
+
+schemes:
+  CrossNotifier:
+    build:
+      targets:
+        CrossNotifier: all
+    test:
+      targets:
+        - CrossNotifierTests
+    run:
+      config: Debug
+    archive:
+      config: Release

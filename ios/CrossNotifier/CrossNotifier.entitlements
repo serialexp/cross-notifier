@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- `development` while sideloading / running from Xcode; Apple
+       rewrites it to `production` on App Store / TestFlight archives.
+       Matches APNS_ENVIRONMENT on the server side: sandbox for
+       development, production otherwise. -->
+  <key>aps-environment</key>
+  <string>development</string>
+</dict>
+</plist>

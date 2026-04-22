@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Extensions don't need aps-environment of their own — the host
+       app provides it — but this file anchors code-sign settings and
+       gives us a place to add entitlements later (e.g. app groups if
+       we ever want to share state between the app and the extension). -->
+</dict>
+</plist>
