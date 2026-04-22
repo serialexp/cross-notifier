@@ -22,9 +22,19 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 
 uuid = { workspace = true }
+chrono = { workspace = true }
+
+# APNS push notifications
+jsonwebtoken = "9"
+
+[features]
+# Exposes the in-process APNS mock server so downstream integration
+# tests can drive it. Not needed for unit tests within this crate.
+test-util = []
 
 [dev-dependencies]
 tokio-tungstenite = { workspace = true }
 tower = { workspace = true }
 http = "1"
 http-body-util = "0.1"
+tempfile = "3"

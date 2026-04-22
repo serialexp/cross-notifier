@@ -5,9 +5,11 @@
 //! endpoints under their own path, alongside any extra routes they need.
 
 pub mod action;
+pub mod device;
 pub mod icon;
 pub mod openapi;
 pub mod protocol;
+pub mod push;
 pub mod router;
 pub mod state;
 pub mod subscriber;
