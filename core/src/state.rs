@@ -11,9 +11,11 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::action::{ActionError, execute_http_action};
+use crate::device::{DeviceRegistry, Platform};
 use crate::protocol::{
     Action, ActionMessage, ExpiredMessage, Notification, ResolvedMessage,
 };
+use crate::push::{ApnsClient, PushError, PushOutcome};
 use crate::subscriber::{OutboundMessage, Subscriber};
 
 /// Short wait used when a caller sets `wait=0` but the notification is
@@ -53,6 +55,12 @@ struct CoreInner {
     subscribers: RwLock<Vec<Subscriber>>,
     pending: Mutex<HashMap<String, Arc<PendingEntry>>>,
     http: reqwest::Client,
+    /// Optional registry of mobile push targets. `None` ⇒ no /devices
+    /// endpoints and no push dispatch.
+    devices: Option<DeviceRegistry>,
+    /// Optional APNS client. Requires `devices` to also be set for push
+    /// dispatch to do anything useful.
+    apns: Option<ApnsClient>,
 }
 
 impl CoreState {
@@ -63,8 +71,35 @@ impl CoreState {
                 subscribers: RwLock::new(Vec::new()),
                 pending: Mutex::new(HashMap::new()),
                 http: reqwest::Client::new(),
+                devices: None,
+                apns: None,
             }),
         }
+    }
+
+    /// Attach a device registry. Only meaningful when combined with a
+    /// push provider — the registry without APNS is just a list.
+    pub fn with_device_registry(mut self, reg: DeviceRegistry) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("CoreState::with_device_registry called after cloning")
+            .devices = Some(reg);
+        self
+    }
+
+    /// Attach an APNS push client.
+    pub fn with_apns(mut self, apns: ApnsClient) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("CoreState::with_apns called after cloning")
+            .apns = Some(apns);
+        self
+    }
+
+    pub fn devices(&self) -> Option<&DeviceRegistry> {
+        self.inner.devices.as_ref()
+    }
+
+    pub fn apns(&self) -> Option<&ApnsClient> {
+        self.inner.apns.as_ref()
     }
 
     pub fn secret(&self) -> &str {
@@ -258,5 +293,79 @@ impl CoreState {
     /// Snapshot of the number of live pending notifications (tests only).
     pub async fn pending_count(&self) -> usize {
         self.inner.pending.lock().await.len()
+    }
+
+    /// Fire-and-forget push to every registered iOS device. No-op unless
+    /// BOTH a registry and an APNS client are configured.
+    ///
+    /// Runs sequentially (one token at a time) to keep APNS happy — it
+    /// reuses the same HTTP/2 connection and hates flood starts. For the
+    /// single-tenant scale we're aiming for that's fine; if it ever
+    /// matters we can bound-concurrent.
+    pub async fn dispatch_push(&self, n: &Notification) {
+        let (registry, apns) = match (self.devices(), self.apns()) {
+            (Some(r), Some(a)) => (r.clone(), a.clone()),
+            _ => return,
+        };
+
+        // Exclusive notifications rely on client-side resolution, which
+        // backgrounded iOS can't do reliably. Skip them on mobile.
+        if n.exclusive {
+            debug!(
+                id = %n.id,
+                "skipping APNS dispatch for exclusive notification",
+            );
+            return;
+        }
+
+        let devices = registry.list_for(Platform::Ios).await;
+        if devices.is_empty() {
+            return;
+        }
+
+        let payload = ApnsClient::build_payload(n);
+        let mut dead: Vec<String> = Vec::new();
+        let mut delivered = 0usize;
+
+        for device in &devices {
+            match apns.send(&device.token, &payload).await {
+                Ok(PushOutcome::Delivered) => {
+                    delivered += 1;
+                    registry.record_push(&device.token).await;
+                }
+                Ok(PushOutcome::PruneToken(reason)) => {
+                    warn!(
+                        token_prefix = &device.token.chars().take(8).collect::<String>(),
+                        reason, "APNS reported dead token, pruning",
+                    );
+                    dead.push(device.token.clone());
+                }
+                Ok(PushOutcome::Retryable(reason)) => {
+                    warn!(
+                        token_prefix = &device.token.chars().take(8).collect::<String>(),
+                        reason, "APNS transient failure, will retry on next push",
+                    );
+                }
+                Err(PushError::AuthRejected(reason)) => {
+                    // Config problem — no point continuing this batch.
+                    warn!(reason, "APNS auth rejected, aborting dispatch");
+                    break;
+                }
+                Err(e) => {
+                    warn!(error = %e, "APNS dispatch error");
+                }
+            }
+        }
+
+        if !dead.is_empty() {
+            registry.remove_many(&dead).await;
+        }
+
+        debug!(
+            attempted = devices.len(),
+            delivered,
+            pruned = dead.len(),
+            "apns dispatch complete",
+        );
     }
 }

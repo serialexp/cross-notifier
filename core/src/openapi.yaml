@@ -21,6 +21,8 @@ security:
 tags:
   - name: notify
     description: Send notifications and await responses.
+  - name: devices
+    description: Register mobile push targets (iOS via APNS).
   - name: meta
     description: Server metadata.
 
@@ -110,6 +112,69 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /devices:
+    get:
+      tags: [devices]
+      summary: List registered push devices
+      description: |
+        Available only when the server is started with a device registry
+        (set `-devices-file` or `CROSS_NOTIFIER_DEVICES_FILE`). Returns
+        every registered device regardless of platform.
+      responses:
+        "200":
+          description: Device list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: "#/components/schemas/Device" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Registry not configured on this server.
+    post:
+      tags: [devices]
+      summary: Register a push device
+      description: |
+        Upsert by `deviceToken`. Re-registering the same token updates
+        the label but preserves the original `registeredAt`. Called by
+        the mobile app on every launch so the server can learn fresh
+        tokens after reinstalls or iCloud restores.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterDeviceRequest" }
+      responses:
+        "200":
+          description: Registered (or updated).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Registry not configured on this server.
+
+  /devices/{token}:
+    delete:
+      tags: [devices]
+      summary: Unregister a push device
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Unregistered.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Token not found, or registry not configured.
 
   /health:
     get:
@@ -257,3 +322,37 @@ components:
         status:
           type: string
           enum: [pending]
+
+    Platform:
+      type: string
+      enum: [ios, android]
+      description: |
+        Push transport family. Only `ios` (APNS) is wired up today;
+        `android` is reserved for a future FCM implementation.
+
+    Device:
+      type: object
+      required: [token, platform, registeredAt]
+      properties:
+        token:
+          type: string
+          description: Opaque push token issued by APNS/FCM.
+        label:
+          type: string
+          description: Human-readable label for the device list UI.
+        platform: { $ref: "#/components/schemas/Platform" }
+        registeredAt:
+          type: string
+          format: date-time
+        lastPushAt:
+          type: string
+          format: date-time
+          description: Timestamp of the last successful push, if any.
+
+    RegisterDeviceRequest:
+      type: object
+      required: [deviceToken, platform]
+      properties:
+        deviceToken: { type: string }
+        label: { type: string }
+        platform: { $ref: "#/components/schemas/Platform" }

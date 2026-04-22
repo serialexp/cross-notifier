@@ -13,13 +13,14 @@ use axum::{
     },
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
+use crate::device::{Device, Platform};
 use crate::openapi;
 use crate::protocol::{
     ActionMessage, ExpiredMessage, Message, MessageType, Notification, PendingResponse,
@@ -34,6 +35,8 @@ pub fn router(state: CoreState) -> Router {
         .route("/notify", post(handle_notify))
         .route("/notify/{id}/wait", get(handle_wait))
         .route("/ws", get(handle_ws))
+        .route("/devices", get(handle_list_devices).post(handle_register_device))
+        .route("/devices/{token}", delete(handle_unregister_device))
         .route("/health", get(|| async { "ok" }))
         .route(
             "/openapi.yaml",
@@ -133,11 +136,114 @@ async fn handle_notify(
 
     state.broadcast(OutboundMessage::Notification(n.clone())).await;
 
+    // Fan out to mobile push targets on a background task so the HTTP
+    // caller doesn't wait on APNS. A slow APNS call would otherwise
+    // balloon our /notify latency and potentially tip over upstream
+    // proxies.
+    if state.apns().is_some() && state.devices().is_some() {
+        let state_for_push = state.clone();
+        let notif_for_push = n.clone();
+        tokio::spawn(async move {
+            state_for_push.dispatch_push(&notif_for_push).await;
+        });
+    }
+
     let Some(rx) = pending_rx else {
         return StatusCode::ACCEPTED.into_response();
     };
 
     wait_and_respond(&n.id, rx, Duration::from_secs(wait_secs)).await
+}
+
+// --- /devices handlers ---
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterDeviceRequest {
+    device_token: String,
+    #[serde(default)]
+    label: String,
+    platform: Platform,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceListResponse {
+    devices: Vec<Device>,
+}
+
+/// Returns 404 as JSON `{"error":"..."}` when push isn't configured on
+/// this server. Cleaner than an empty 200 from the client's perspective.
+fn no_registry_response() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({
+            "error": "device registry not configured on this server",
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_register_device(
+    State(state): State<CoreState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !check_auth(&headers, state.secret()) {
+        return unauthorized();
+    }
+    let Some(registry) = state.devices() else {
+        return no_registry_response();
+    };
+
+    let req: RegisterDeviceRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    if req.device_token.is_empty() {
+        return (StatusCode::BAD_REQUEST, "deviceToken is required").into_response();
+    }
+
+    let device = registry.register(req.device_token, req.label, req.platform).await;
+    info!(
+        platform = ?device.platform,
+        label = %device.label,
+        "registered push device",
+    );
+    (StatusCode::OK, axum::Json(device)).into_response()
+}
+
+async fn handle_unregister_device(
+    State(state): State<CoreState>,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !check_auth(&headers, state.secret()) {
+        return unauthorized();
+    }
+    let Some(registry) = state.devices() else {
+        return no_registry_response();
+    };
+    let removed = registry.unregister(&token).await;
+    if removed {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+async fn handle_list_devices(
+    State(state): State<CoreState>,
+    headers: HeaderMap,
+) -> Response {
+    if !check_auth(&headers, state.secret()) {
+        return unauthorized();
+    }
+    let Some(registry) = state.devices() else {
+        return no_registry_response();
+    };
+    let devices = registry.list().await;
+    (StatusCode::OK, axum::Json(DeviceListResponse { devices })).into_response()
 }
 
 async fn wait_and_respond(
@@ -296,5 +402,241 @@ fn encode_outbound(msg: &OutboundMessage) -> anyhow::Result<String> {
         OutboundMessage::Notification(n) => Message::encode(MessageType::Notification, n),
         OutboundMessage::Resolved(r) => Message::encode(MessageType::Resolved, r),
         OutboundMessage::Expired(e) => Message::encode(MessageType::Expired, e),
+    }
+}
+
+#[cfg(test)]
+mod push_integration_tests {
+    //! End-to-end: hit the real router with a real mock-APNS server in
+    //! front of it, and prove the /notify path fans out to registered
+    //! devices (and prunes them when APNS says they're dead).
+
+    use super::*;
+    use crate::device::DeviceRegistry;
+    use crate::push::apns::{ApnsClient, ApnsConfig, ApnsKey};
+    use crate::push::mock::MockApns;
+    use axum::http::StatusCode as HttpStatus;
+    use tokio::net::TcpListener;
+
+    const SECRET: &str = "itest-secret";
+
+    /// Test-only ES256 key; matches the fixture in apns.rs tests.
+    const TEST_P8: &str = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgevZzL1gdAFr88hb2\nOF/2NxApJCzGCEDdfSp6VQO30hyhRANCAAQRWz+jn65BtOMvdyHKcvjBeBSDZH2r\n1RTwjmYSi9R/zpBnuQ4EiMnCqfMPWiZqB4QdbAd0E7oH50VpuZ1P087G\n-----END PRIVATE KEY-----\n";
+
+    struct Harness {
+        base: String,
+        state: CoreState,
+        mock: MockApns,
+    }
+
+    async fn spawn_harness() -> Harness {
+        let mock = MockApns::spawn().await;
+        let cfg = ApnsConfig {
+            base_url: mock.base_url.clone(),
+            team_id: "TEAM123456".into(),
+            key_id: "KEYID67890".into(),
+            bundle_id: "com.example.test".into(),
+            key: ApnsKey::Pem(TEST_P8.as_bytes().to_vec()),
+        };
+        let state = CoreState::new(SECRET)
+            .with_device_registry(DeviceRegistry::in_memory())
+            .with_apns(ApnsClient::new(cfg));
+
+        let app = router(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        Harness {
+            base: format!("http://{addr}"),
+            state,
+            mock,
+        }
+    }
+
+    async fn register(base: &str, http: &reqwest::Client, token: &str, label: &str) {
+        let resp = http
+            .post(format!("{base}/devices"))
+            .bearer_auth(SECRET)
+            .json(&serde_json::json!({
+                "deviceToken": token,
+                "label": label,
+                "platform": "ios",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), HttpStatus::OK);
+    }
+
+    async fn post_notify(base: &str, http: &reqwest::Client, title: &str) {
+        let resp = http
+            .post(format!("{base}/notify"))
+            .bearer_auth(SECRET)
+            .json(&serde_json::json!({
+                "source": "itest",
+                "title": title,
+                "message": "body",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "notify failed: {}",
+            resp.status()
+        );
+    }
+
+    /// Spin until the mock has recorded at least `n` pushes, or fail the
+    /// test after ~2s. Background dispatch means /notify returns before
+    /// APNS sees the request.
+    async fn wait_for_pushes(mock: &MockApns, n: usize) {
+        for _ in 0..40 {
+            if mock.requests().len() >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!(
+            "expected >= {n} pushes to mock APNS, got {}",
+            mock.requests().len()
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_fans_out_to_registered_devices() {
+        let h = spawn_harness().await;
+        let http = reqwest::Client::new();
+
+        register(&h.base, &http, "tok-a", "A").await;
+        register(&h.base, &http, "tok-b", "B").await;
+        post_notify(&h.base, &http, "hello").await;
+
+        wait_for_pushes(&h.mock, 2).await;
+        let tokens: std::collections::HashSet<String> = h
+            .mock
+            .requests()
+            .into_iter()
+            .map(|r| r.token)
+            .collect();
+        assert_eq!(tokens.len(), 2);
+        assert!(tokens.contains("tok-a"));
+        assert!(tokens.contains("tok-b"));
+        assert_eq!(h.state.devices().unwrap().count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn dead_tokens_get_pruned_from_registry() {
+        let h = spawn_harness().await;
+        let http = reqwest::Client::new();
+
+        register(&h.base, &http, "alive", "alive").await;
+        register(&h.base, &http, "dead", "dead").await;
+        h.mock
+            .set_response("dead", HttpStatus::GONE, "Unregistered");
+        post_notify(&h.base, &http, "hi").await;
+
+        // Wait for both pushes to be attempted.
+        wait_for_pushes(&h.mock, 2).await;
+        // Registry prune runs after the dispatch loop finishes; poll.
+        for _ in 0..40 {
+            if h.state.devices().unwrap().count().await == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let remaining: Vec<String> = h
+            .state
+            .devices()
+            .unwrap()
+            .list()
+            .await
+            .into_iter()
+            .map(|d| d.token)
+            .collect();
+        assert_eq!(remaining, vec!["alive".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn exclusive_notifications_skip_push() {
+        let h = spawn_harness().await;
+        let http = reqwest::Client::new();
+
+        register(&h.base, &http, "tok", "x").await;
+        // Exclusive via `wait` — fires the skip-for-mobile branch.
+        let resp = http
+            .post(format!("{}/notify", h.base))
+            .bearer_auth(SECRET)
+            .json(&serde_json::json!({
+                "source": "itest",
+                "title": "ex",
+                "message": "m",
+                "wait": 1,
+                "maxWait": 1,
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success() || resp.status() == HttpStatus::GONE);
+
+        // Give the dispatch task a beat to possibly (incorrectly) fire.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            h.mock.requests().len(),
+            0,
+            "exclusive notifications must not push to mobile",
+        );
+    }
+
+    #[tokio::test]
+    async fn register_and_unregister_device() {
+        let h = spawn_harness().await;
+        let http = reqwest::Client::new();
+
+        register(&h.base, &http, "tok", "Phone").await;
+        let listing: serde_json::Value = http
+            .get(format!("{}/devices", h.base))
+            .bearer_auth(SECRET)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let devices = listing["devices"].as_array().unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0]["label"], "Phone");
+
+        let del = http
+            .delete(format!("{}/devices/tok", h.base))
+            .bearer_auth(SECRET)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(del.status(), HttpStatus::NO_CONTENT);
+        assert_eq!(h.state.devices().unwrap().count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn devices_endpoint_404s_when_registry_disabled() {
+        let state = CoreState::new(SECRET);
+        let app = router(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base = format!("http://{addr}");
+
+        let resp = reqwest::Client::new()
+            .get(format!("{base}/devices"))
+            .bearer_auth(SECRET)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), HttpStatus::NOT_FOUND);
     }
 }
