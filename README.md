@@ -531,6 +531,35 @@ Each row:
 by a snooze." `firedAt` alone means "handled, in GC retention." No
 `firedAt` means "still waiting to fire."
 
+### Matching calendar notifications in rules
+
+Every calendar notification — reminder or daily summary — is delivered
+with `source: "calendar"`, so the daemon's rule engine (Settings →
+Rules) can target them the same way it targets any other source. Use
+this to pick a distinctive sound, silence them when heads-down, etc.
+
+```json
+{
+  "rules": {
+    "enabled": true,
+    "rules": [
+      { "source": "calendar", "pattern": "^Agenda ",  "sound": "Bell" },
+      { "source": "calendar", "pattern": "Standup",   "action": "silent" },
+      { "source": "calendar", "sound": "Chime" }
+    ]
+  }
+}
+```
+
+First-match-wins, so order matters — put the narrow rules first. Useful
+selectors given how the notifications are formatted:
+
+- Daily summary: title always starts with `Agenda — `, so `^Agenda `
+  isolates it from reminders.
+- Reminder with a location: message format is `HH:MM · location`, so
+  the literal `·` matches exactly those.
+- Specific event: `pattern` is a regex over `title + message`.
+
 ### Scope and limitations
 
 - Only `DISPLAY` / `AUDIO` VALARMs with a relative `TRIGGER` duration
