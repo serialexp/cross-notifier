@@ -36,6 +36,8 @@ use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 use app::AppEvent;
 use card::CARD_W;
 use config::Config;
+use cross_notifier_calendar::{CalendarHandleSlot, CalendarService};
+use cross_notifier_core::CoreState;
 use font::FontAtlas;
 use gpu::{GpuContext, WindowSurface};
 use notification::{NotificationPayload, NotificationQueue};
@@ -77,6 +79,14 @@ struct App {
     connections: ConnectionMap,
     client_handles: Vec<client::ClientHandle>,
 
+    // Embedded notification core — shared with the HTTP server (for
+    // /notify, /ws, etc.) and the calendar service (for reminder
+    // delivery). Held at the App level so we can spawn/restart the
+    // calendar without taking the HTTP server down.
+    core: CoreState,
+    calendar_slot: CalendarHandleSlot,
+    calendar: Option<CalendarService>,
+
     // Tokio runtime (owned, kept alive)
     _runtime: tokio::runtime::Runtime,
 
@@ -116,7 +126,32 @@ impl App {
             store::NotificationStore::load(store::NotificationStore::default_path()),
         ));
 
-        // Start HTTP server (uses EventLoopProxy to wake main thread)
+        // Core with auth disabled (localhost only) — gives us the same
+        // /notify, /notify/{id}/wait, /ws, /health, /openapi.* endpoints
+        // the remote server exposes, with identical wait/maxWait behavior.
+        // Owned at the App level so the calendar service can share it
+        // across reloads without the HTTP server task also holding one.
+        let core = CoreState::new("");
+        let calendar_slot = CalendarHandleSlot::new();
+
+        // Spawn the initial calendar service if the user already has one
+        // configured. Later config changes reuse the same slot so routes
+        // keep working while we swap services underneath.
+        let calendar = if let Some(cal_cfg) = config.calendar.clone() {
+            runtime.block_on(async {
+                let svc = server::spawn_local_calendar(cal_cfg, core.clone(), port).await;
+                if let Some(svc) = svc.as_ref() {
+                    calendar_slot.set(Some(svc.handle()));
+                }
+                svc
+            })
+        } else {
+            None
+        };
+
+        // Start HTTP server (uses EventLoopProxy to wake main thread).
+        // The HTTP server mounts the calendar action router against the
+        // shared slot, so reloads can swap handles without re-binding.
         let server_proxy = event_proxy.clone();
         let server_connections = connections.clone();
         let server_store = store.clone();
@@ -125,6 +160,8 @@ impl App {
             server_proxy,
             server_connections,
             server_store,
+            core.clone(),
+            calendar_slot.clone(),
         ));
 
         // Start WebSocket clients for each configured server
@@ -161,6 +198,9 @@ impl App {
             settings: None,
             connections,
             client_handles,
+            core,
+            calendar_slot,
+            calendar,
             _runtime: runtime,
             _config_watcher: config_watcher,
             cursor_pos: (0.0, 0.0),
@@ -838,8 +878,13 @@ impl App {
         // Check if servers changed
         let servers_changed = self.config.servers != new_config.servers
             || self.config.name != new_config.name;
+        let calendar_changed = self.config.calendar != new_config.calendar;
 
         self.config = new_config;
+
+        if calendar_changed {
+            self.reload_calendar();
+        }
 
         if servers_changed {
             // Drop old clients
@@ -861,6 +906,41 @@ impl App {
 
             info!("Reconnected {} servers", self.config.servers.len());
         }
+    }
+
+    /// Replace the running calendar service with one built from the
+    /// current config. Called after the user saves new calendar settings
+    /// (or the on-disk config file changes). Shuts the old service down
+    /// cleanly before starting the replacement so they don't race on the
+    /// shared state file.
+    fn reload_calendar(&mut self) {
+        let cfg = self.config.calendar.clone();
+        let core = self.core.clone();
+        let slot = self.calendar_slot.clone();
+        let port = self.port;
+
+        // Take the existing service out before spawning the new one so we
+        // don't hold two services for the same state file at once.
+        let old = self.calendar.take();
+        slot.set(None);
+
+        let new_svc = self._runtime.block_on(async move {
+            if let Some(svc) = old {
+                svc.shutdown().await;
+            }
+            match cfg {
+                Some(cal_cfg) => server::spawn_local_calendar(cal_cfg, core, port).await,
+                None => None,
+            }
+        });
+
+        if let Some(svc) = new_svc.as_ref() {
+            slot.set(Some(svc.handle()));
+            info!("Calendar service reloaded");
+        } else {
+            info!("Calendar service stopped");
+        }
+        self.calendar = new_svc;
     }
 
     /// Manually reconnect a single server by dropping its client handle

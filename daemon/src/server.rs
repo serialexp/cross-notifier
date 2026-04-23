@@ -10,6 +10,11 @@ use axum::{
     routing::{delete, get},
     Json, Router,
 };
+use cross_notifier_calendar::{
+    calendar_action_router, CalDav, CalendarHandleSlot, CalendarService, CalendarServiceConfig,
+    CalendarSource as CalSource, CoreNotifier, CoreNotifierConfig, DailySummaryConfig, IcsFile,
+    IcsUrl, JsonStore,
+};
 use cross_notifier_core::{
     CoreState, OutboundMessage, Subscriber, router as core_router,
 };
@@ -56,6 +61,8 @@ pub async fn run_server(
     event_proxy: EventLoopProxy<AppEvent>,
     connections: ConnectionMap,
     store: SharedStore,
+    core: CoreState,
+    calendar_slot: CalendarHandleSlot,
 ) {
     let state = AppState {
         event_proxy: Some(event_proxy.clone()),
@@ -63,10 +70,6 @@ pub async fn run_server(
         store,
     };
 
-    // Core with auth disabled (localhost only) — gives us the same
-    // /notify, /notify/{id}/wait, /ws, /health, /openapi.* endpoints
-    // the remote server exposes, with identical wait/maxWait behavior.
-    let core = CoreState::new("");
     spawn_local_bridge(core.clone(), event_proxy).await;
 
     let daemon_routes = Router::new()
@@ -77,7 +80,20 @@ pub async fn run_server(
         .route("/center/count", get(handle_center_count))
         .with_state(state);
 
-    let app = core_router(core).merge(daemon_routes);
+    // The calendar-action routes are always mounted; the slot decides at
+    // request time whether there's a running service to delegate to (503
+    // otherwise). This is what lets the app hot-swap calendar config
+    // without taking the HTTP server down.
+    //
+    // Auth disabled: the daemon's HTTP server doesn't enforce auth on
+    // its other routes either, and the action URLs point at localhost
+    // on the same machine.
+    let app = core_router(core)
+        .merge(daemon_routes)
+        .nest(
+            "/calendar/action",
+            calendar_action_router(calendar_slot, None),
+        );
 
     let addr = format!("0.0.0.0:{}", port);
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -128,6 +144,105 @@ async fn spawn_local_bridge(core: CoreState, event_proxy: EventLoopProxy<AppEven
             }
         }
     });
+}
+
+/// Spawn a `CalendarService` for the daemon using the config the user
+/// set in Settings. Returns `None` if the source URL/path is blank (we
+/// don't want to slam Fastmail with unauthenticated requests on an
+/// accidentally-saved empty config) or if startup fails.
+///
+/// The caller is responsible for installing the returned service's handle
+/// into the `CalendarHandleSlot` passed to `run_server`, and for calling
+/// `shutdown().await` on the service before replacing it.
+pub(crate) async fn spawn_local_calendar(
+    cfg: crate::config::CalendarConfig,
+    core: CoreState,
+    port: u16,
+) -> Option<CalendarService> {
+    use std::sync::Arc;
+
+    let source: Arc<dyn CalSource> = match &cfg.source {
+        crate::config::CalendarSource::CalDav {
+            endpoint,
+            user,
+            password,
+        } => {
+            if endpoint.is_empty() || user.is_empty() || password.is_empty() {
+                tracing::warn!(
+                    "calendar: CalDAV source has blank fields; not starting",
+                );
+                return None;
+            }
+            Arc::new(CalDav::new(endpoint.clone(), user.clone(), password.clone()))
+        }
+        crate::config::CalendarSource::IcsUrl {
+            url,
+            user,
+            password,
+        } => {
+            if url.is_empty() {
+                tracing::info!("calendar: ICS URL is blank; not starting");
+                return None;
+            }
+            let mut s = IcsUrl::new(url.clone());
+            if !user.is_empty() && !password.is_empty() {
+                s = s.with_basic_auth(user.clone(), password.clone());
+            }
+            Arc::new(s)
+        }
+        crate::config::CalendarSource::IcsFile { path } => {
+            if path.is_empty() {
+                tracing::warn!("calendar: ICS file path is blank; not starting");
+                return None;
+            }
+            Arc::new(IcsFile::new(path.clone()))
+        }
+    };
+
+    let action_base_url = format!("http://127.0.0.1:{port}/calendar/action");
+    let notifier = Arc::new(CoreNotifier::new(
+        core,
+        CoreNotifierConfig {
+            action_base_url,
+            // Localhost callbacks — no auth. Matches the rest of the
+            // daemon's HTTP surface.
+            action_auth: None,
+            snooze_hours: cfg.snooze_hours,
+        },
+    ));
+
+    let state_path = dirs::data_dir()
+        .or_else(dirs::config_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("cross-notifier")
+        .join("calendar-state.json");
+    let store = Arc::new(JsonStore::new(state_path.clone()));
+
+    let svc_cfg = CalendarServiceConfig {
+        horizon: chrono::Duration::hours(cfg.horizon_hours as i64),
+        refresh_interval: chrono::Duration::minutes(cfg.refresh_minutes as i64),
+        daily_summary: cfg.daily_summary.map(|s| DailySummaryConfig {
+            hour: s.hour,
+            minute: s.minute,
+        }),
+    };
+
+    match CalendarService::spawn(source.clone(), notifier, store, svc_cfg).await {
+        Ok(svc) => {
+            tracing::info!(
+                source = source.label(),
+                horizon_hours = cfg.horizon_hours,
+                refresh_minutes = cfg.refresh_minutes,
+                state_file = %state_path.display(),
+                "calendar: enabled",
+            );
+            Some(svc)
+        }
+        Err(e) => {
+            tracing::warn!("calendar: failed to spawn service: {e}");
+            None
+        }
+    }
 }
 
 fn core_notification_to_payload(n: cross_notifier_core::Notification) -> NotificationPayload {

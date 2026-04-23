@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 cross-notifier-core = { path = "../core" }
+cross-notifier-calendar = { path = "../calendar" }
 
 # Windowing & rendering
 winit = "0.30"

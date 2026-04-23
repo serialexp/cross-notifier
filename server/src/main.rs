@@ -3,8 +3,13 @@
 use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use cross_notifier_calendar::{
+    calendar_action_router, CalDav, CalendarService, CalendarServiceConfig, CalendarSource,
+    CoreNotifier, CoreNotifierConfig, IcsFile, IcsUrl, JsonStore,
+};
 use cross_notifier_core::{
     CoreState,
     device::DeviceRegistry,
@@ -236,7 +241,10 @@ fn print_usage() {
 }
 
 async fn run(args: Args) -> Result<()> {
-    let mut state = CoreState::new(args.secret);
+    // Keep a copy for the calendar action router auth — state owns one,
+    // the router owns one, CLI args stay logically immutable.
+    let secret = args.secret.clone();
+    let mut state = CoreState::new(secret.clone());
 
     if let Some(path) = args.devices_file.as_ref() {
         let reg = DeviceRegistry::from_file(path)
@@ -275,7 +283,23 @@ async fn run(args: Args) -> Result<()> {
         state = state.with_device_registry(DeviceRegistry::in_memory());
     }
 
-    let app = router(state);
+    // Optionally attach the calendar service. Driven purely by env vars
+    // for the server (vs. the daemon, which plumbs this through its
+    // persistent config). The calendar is off unless a source is set.
+    let calendar = maybe_spawn_calendar(&args, &secret, state.clone()).await?;
+
+    let mut app = router(state);
+    if let Some(calendar) = calendar.as_ref() {
+        // The server keeps the calendar service for the lifetime of the
+        // process, but we still go through a slot so the router API is
+        // uniform with the daemon (which swaps the handle on reload).
+        let slot = cross_notifier_calendar::CalendarHandleSlot::new();
+        slot.set(Some(calendar.handle()));
+        app = app.nest(
+            "/calendar/action",
+            calendar_action_router(slot, Some(secret.clone())),
+        );
+    }
 
     let addr: SocketAddr = ([0, 0, 0, 0], args.port).into();
     tracing::info!("Notification server listening on {addr}");
@@ -288,8 +312,117 @@ async fn run(args: Args) -> Result<()> {
     tracing::info!("  GET    /health          - health check (no auth)");
     tracing::info!("  GET    /openapi.yaml    - OpenAPI spec, YAML (no auth)");
     tracing::info!("  GET    /openapi.json    - OpenAPI spec, JSON (no auth)");
+    if calendar.is_some() {
+        tracing::info!("  POST   /calendar/action/snooze  - snooze calendar reminder (requires auth)");
+        tracing::info!("  POST   /calendar/action/dismiss - dismiss calendar reminder (requires auth)");
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Build and spawn a `CalendarService` if the environment configures one.
+///
+/// Three source selectors are honored, in priority order:
+///   1. `CAL_ICS_FILE`  — local .ics file (handy for testing)
+///   2. `CAL_ICS_URL`   — public ICS subscription URL (with optional basic auth)
+///   3. `CALDAV_*` set  — full CalDAV with per-calendar credentials
+///
+/// Persistence: `CAL_STATE_FILE` (defaults to `./calendar-state.json`).
+/// Horizon: `CAL_HORIZON_HOURS` (default 48).
+/// Refresh: `CAL_REFRESH_MINUTES` (default 5).
+async fn maybe_spawn_calendar(
+    args: &Args,
+    secret: &str,
+    state: CoreState,
+) -> Result<Option<CalendarService>> {
+    let source: Option<Arc<dyn CalendarSource>> = if let Ok(path) = env::var("CAL_ICS_FILE") {
+        Some(Arc::new(IcsFile::new(path)))
+    } else if let Ok(url) = env::var("CAL_ICS_URL") {
+        let mut s = IcsUrl::new(url);
+        if let (Ok(u), Ok(p)) = (env::var("CAL_ICS_USER"), env::var("CAL_ICS_PASSWORD")) {
+            s = s.with_basic_auth(u, p);
+        }
+        Some(Arc::new(s))
+    } else if let (Ok(endpoint), Ok(user), Ok(password)) = (
+        env::var("CALDAV_ENDPOINT"),
+        env::var("CALDAV_USER"),
+        env::var("CALDAV_PASSWORD"),
+    ) {
+        Some(Arc::new(CalDav::new(endpoint, user, password)))
+    } else {
+        None
+    };
+
+    let Some(source) = source else {
+        tracing::info!("calendar: disabled (no source configured)");
+        return Ok(None);
+    };
+
+    let horizon_hours: i64 = env::var("CAL_HORIZON_HOURS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(48);
+    let refresh_minutes: i64 = env::var("CAL_REFRESH_MINUTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let state_file = env::var("CAL_STATE_FILE")
+        .unwrap_or_else(|_| "calendar-state.json".to_string());
+
+    let store = Arc::new(JsonStore::new(state_file.clone()));
+    // The server always listens on 0.0.0.0; remote daemons will POST
+    // actions back here via their public URL, so the base URL needs to
+    // include whatever hostname the operator uses. Let them override it
+    // via CAL_ACTION_BASE_URL; otherwise assume localhost (good for
+    // single-box deployments).
+    let action_base_url = env::var("CAL_ACTION_BASE_URL").unwrap_or_else(|_| {
+        format!("http://127.0.0.1:{}/calendar/action", args.port)
+    });
+
+    let notifier = Arc::new(CoreNotifier::new(
+        state,
+        CoreNotifierConfig {
+            action_base_url,
+            action_auth: Some(secret.to_string()),
+            snooze_hours: 4,
+        },
+    ));
+
+    // Daily summary: set CAL_SUMMARY_AT="HH:MM" to enable. Omitting the
+    // env var disables the feature. Invalid values skip summary with a
+    // warning — silently ignoring would be worse.
+    let daily_summary = env::var("CAL_SUMMARY_AT").ok().and_then(|v| {
+        let (h_s, m_s) = v.split_once(':')?;
+        let h: u32 = h_s.parse().ok()?;
+        let m: u32 = m_s.parse().ok()?;
+        if h > 23 || m > 59 {
+            return None;
+        }
+        Some(cross_notifier_calendar::DailySummaryConfig { hour: h, minute: m })
+    });
+    if env::var("CAL_SUMMARY_AT").is_ok() && daily_summary.is_none() {
+        tracing::warn!("calendar: CAL_SUMMARY_AT is not HH:MM; summary disabled");
+    }
+
+    let cfg = CalendarServiceConfig {
+        horizon: chrono::Duration::hours(horizon_hours),
+        refresh_interval: chrono::Duration::minutes(refresh_minutes),
+        daily_summary,
+    };
+
+    let svc = CalendarService::spawn(source.clone(), notifier, store, cfg)
+        .await
+        .context("spawning calendar service")?;
+
+    tracing::info!(
+        source = source.label(),
+        horizon_hours,
+        refresh_minutes,
+        state_file,
+        "calendar: enabled",
+    );
+
+    Ok(Some(svc))
 }

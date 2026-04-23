@@ -61,6 +61,115 @@ struct SettingsState {
     rules: Vec<RuleEntry>,
     autostart_enabled: bool,
     debug_font_metrics: bool,
+    /// Calendar settings surfaced in the UI. `None` means the feature is
+    /// off; populated means the user has chosen a source kind.
+    calendar: Option<CalendarEntry>,
+}
+
+/// UI-facing shape for CalendarConfig. Flattens the CalendarSource enum
+/// into a `kind` string + all possible fields so egui can render/edit
+/// them in place without a type switch each frame.
+#[derive(Clone)]
+struct CalendarEntry {
+    /// "caldav" | "icsUrl" | "icsFile"
+    kind: String,
+    endpoint: String,  // caldav + icsUrl share this (URL field)
+    user: String,
+    password: String,
+    path: String,      // icsFile
+    horizon_hours: u32,
+    refresh_minutes: u32,
+    snooze_hours: u32,
+    /// Daily summary enabled? When true, `summary_hour`/`summary_minute`
+    /// apply; when false they're still editable but ignored on save.
+    summary_enabled: bool,
+    summary_hour: u32,
+    summary_minute: u32,
+}
+
+impl Default for CalendarEntry {
+    fn default() -> Self {
+        Self {
+            kind: "caldav".into(),
+            endpoint: String::new(),
+            user: String::new(),
+            password: String::new(),
+            path: String::new(),
+            horizon_hours: 48,
+            refresh_minutes: 5,
+            snooze_hours: 4,
+            summary_enabled: false,
+            summary_hour: 12,
+            summary_minute: 0,
+        }
+    }
+}
+
+impl CalendarEntry {
+    fn from_config(c: &crate::config::CalendarConfig) -> Self {
+        let mut e = CalendarEntry {
+            horizon_hours: c.horizon_hours,
+            refresh_minutes: c.refresh_minutes,
+            snooze_hours: c.snooze_hours,
+            summary_enabled: c.daily_summary.is_some(),
+            summary_hour: c.daily_summary.map(|s| s.hour).unwrap_or(12),
+            summary_minute: c.daily_summary.map(|s| s.minute).unwrap_or(0),
+            ..Default::default()
+        };
+        match &c.source {
+            crate::config::CalendarSource::CalDav { endpoint, user, password } => {
+                e.kind = "caldav".into();
+                e.endpoint = endpoint.clone();
+                e.user = user.clone();
+                e.password = password.clone();
+            }
+            crate::config::CalendarSource::IcsUrl { url, user, password } => {
+                e.kind = "icsUrl".into();
+                e.endpoint = url.clone();
+                e.user = user.clone();
+                e.password = password.clone();
+            }
+            crate::config::CalendarSource::IcsFile { path } => {
+                e.kind = "icsFile".into();
+                e.path = path.clone();
+            }
+        }
+        e
+    }
+
+    fn to_config(&self) -> crate::config::CalendarConfig {
+        let source = match self.kind.as_str() {
+            "icsUrl" => crate::config::CalendarSource::IcsUrl {
+                url: self.endpoint.clone(),
+                user: self.user.clone(),
+                password: self.password.clone(),
+            },
+            "icsFile" => crate::config::CalendarSource::IcsFile {
+                path: self.path.clone(),
+            },
+            // caldav and any unknown kind fall through to CalDAV — safest
+            // default since it's the most common source.
+            _ => crate::config::CalendarSource::CalDav {
+                endpoint: self.endpoint.clone(),
+                user: self.user.clone(),
+                password: self.password.clone(),
+            },
+        };
+        crate::config::CalendarConfig {
+            source,
+            horizon_hours: self.horizon_hours,
+            refresh_minutes: self.refresh_minutes,
+            snooze_hours: self.snooze_hours,
+            daily_summary: if self.summary_enabled {
+                Some(crate::config::DailySummarySettings {
+                    hour: self.summary_hour.min(23),
+                    minute: self.summary_minute.min(59),
+                })
+            } else {
+                None
+            },
+        }
+    }
 }
 
 impl SettingsState {
@@ -140,6 +249,7 @@ impl SettingsState {
             rules,
             autostart_enabled: autostart::is_autostart_installed(),
             debug_font_metrics: config.debug_font_metrics,
+            calendar: config.calendar.as_ref().map(CalendarEntry::from_config),
         }
     }
 
@@ -216,6 +326,7 @@ impl SettingsState {
                 rules,
             },
             center_panel: CenterPanelConfig::default(),
+            calendar: self.calendar.as_ref().map(CalendarEntry::to_config),
             debug_font_metrics: self.debug_font_metrics,
         }
     }
@@ -494,6 +605,12 @@ fn draw_settings_ui(
             ui.add_space(8.0);
 
             draw_rules(ui, state);
+
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            draw_calendar(ui, state);
 
             ui.add_space(16.0);
             ui.separator();
@@ -808,6 +925,137 @@ fn draw_rules(ui: &mut egui::Ui, state: &mut SettingsState) {
     }
 }
 
+fn draw_calendar(ui: &mut egui::Ui, state: &mut SettingsState) {
+    ui.label("Calendar:");
+
+    let mut enabled = state.calendar.is_some();
+    if ui
+        .checkbox(&mut enabled, "Enable calendar reminders")
+        .on_hover_text(
+            "Watch a calendar and produce notifications from its VALARMs. \
+             Applies on next daemon restart.",
+        )
+        .changed()
+    {
+        if enabled {
+            state.calendar = Some(CalendarEntry::default());
+        } else {
+            state.calendar = None;
+        }
+    }
+
+    let Some(cal) = state.calendar.as_mut() else {
+        return;
+    };
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Source:");
+        // Three radio buttons acting on the same string discriminator.
+        // We use strings rather than an enum here because SettingsState
+        // flattens all possible fields (see `CalendarEntry`), so the
+        // "which variant" selection is just text.
+        ui.radio_value(&mut cal.kind, "caldav".into(), "CalDAV")
+            .on_hover_text("Full CalDAV: works with Fastmail's per-calendar URL + app password.");
+        ui.radio_value(&mut cal.kind, "icsUrl".into(), "ICS URL")
+            .on_hover_text("Public / subscription .ics URL, with optional basic auth.");
+        ui.radio_value(&mut cal.kind, "icsFile".into(), "ICS File")
+            .on_hover_text("Local .ics file. Useful for testing or offline calendars.");
+    });
+
+    ui.add_space(4.0);
+
+    match cal.kind.as_str() {
+        "icsFile" => {
+            ui.horizontal(|ui| {
+                ui.label("File:");
+                let path_edit = egui::TextEdit::singleline(&mut cal.path)
+                    .desired_width(360.0)
+                    .hint_text("/absolute/path/to/calendar.ics");
+                ui.add(path_edit);
+                if ui.button("Browse…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("iCalendar", &["ics"]).pick_file() {
+                        cal.path = p.to_string_lossy().into_owned();
+                    }
+                }
+            });
+        }
+        // CalDAV and ICS URL share the same fields; the only behaviour
+        // difference is which fetcher the daemon constructs, and that's
+        // decided at spawn time via `kind`.
+        _ => {
+            ui.horizontal(|ui| {
+                let (label, hint) = if cal.kind == "icsUrl" {
+                    ("URL:", "https://example.com/cal.ics")
+                } else {
+                    (
+                        "Endpoint:",
+                        "https://caldav.fastmail.com/dav/calendars/user/you@example.com/<uuid>/",
+                    )
+                };
+                ui.label(label);
+                ui.add(
+                    egui::TextEdit::singleline(&mut cal.endpoint)
+                        .desired_width(420.0)
+                        .hint_text(hint),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("User:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut cal.user)
+                        .desired_width(240.0)
+                        .hint_text(if cal.kind == "icsUrl" { "(optional)" } else { "email" }),
+                );
+                ui.label("Password:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut cal.password)
+                        .desired_width(200.0)
+                        .password(true)
+                        .hint_text("app-specific password"),
+                );
+            });
+        }
+    }
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Look ahead:");
+        ui.add(egui::DragValue::new(&mut cal.horizon_hours).range(1..=720).speed(1.0));
+        ui.label("h");
+        ui.add_space(8.0);
+        ui.label("Refresh every:");
+        ui.add(egui::DragValue::new(&mut cal.refresh_minutes).range(1..=240).speed(1.0));
+        ui.label("min");
+        ui.add_space(8.0);
+        ui.label("Snooze duration:");
+        ui.add(egui::DragValue::new(&mut cal.snooze_hours).range(1..=24).speed(1.0));
+        ui.label("h");
+    });
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut cal.summary_enabled, "Daily summary");
+        ui.add_enabled_ui(cal.summary_enabled, |ui| {
+            ui.label("at");
+            ui.add(
+                egui::DragValue::new(&mut cal.summary_hour)
+                    .range(0..=23)
+                    .speed(1.0)
+                    .custom_formatter(|n, _| format!("{:02}", n as u32)),
+            );
+            ui.label(":");
+            ui.add(
+                egui::DragValue::new(&mut cal.summary_minute)
+                    .range(0..=59)
+                    .speed(1.0)
+                    .custom_formatter(|n, _| format!("{:02}", n as u32)),
+            );
+            ui.weak("(local time — tomorrow's agenda)");
+        });
+    });
+}
+
 fn apply_autostart_from_state(state: &SettingsState) {
     let currently_installed = autostart::is_autostart_installed();
     if state.autostart_enabled && !currently_installed
@@ -866,6 +1114,7 @@ mod tests {
                 ],
             },
             center_panel: CenterPanelConfig::default(),
+            calendar: None,
             debug_font_metrics: true,
         }
     }
