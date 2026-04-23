@@ -14,6 +14,7 @@ A cross-platform notification daemon that displays desktop notifications via HTT
 - Automatic reconnection with exponential backoff
 - Action buttons that trigger HTTP requests or open URLs
 - Exclusive notifications for coordinated actions across multiple clients
+- Calendar integration: reminders and daily agenda from ICS/CalDAV
 
 ## Installation
 
@@ -434,6 +435,112 @@ The server exposes its spec at `GET /openapi.yaml` and `GET /openapi.json` (no a
 | Action execution | Client executes directly | Server executes |
 | Other clients | Unaffected | Notification dismissed |
 | Use case | Personal notifications | Team coordination |
+
+## Calendar Integration
+
+CrossNotifier can watch an ICS file, ICS URL, or CalDAV endpoint and fire
+reminder notifications using each event's own VALARMs. Recurring events
+(RRULE + EXDATE) are expanded locally. State is persisted as JSON so
+in-flight snoozes survive restarts.
+
+Both the daemon and the headless server can run the integration — in
+each case delivery goes through the same notification pipeline
+`/notify` uses, so calendar reminders look and behave like any other
+notification, including on any connected remote client.
+
+### Setting it up
+
+**Daemon (desktop):** open Settings → Calendar, pick a source kind
+(CalDAV / ICS URL / ICS File), fill in the URL (+ user/password for
+CalDAV), and save. Changes take effect immediately — no daemon restart.
+
+**Server (headless):** configure via environment variables. CalDAV takes
+priority over ICS URL which takes priority over ICS file.
+
+| Variable | Description |
+|----------|-------------|
+| `CALDAV_ENDPOINT` / `CALDAV_USER` / `CALDAV_PASSWORD` | CalDAV source (e.g. Fastmail). Endpoint points at a specific calendar collection. |
+| `CAL_ICS_URL` (+ optional `CAL_ICS_USER` / `CAL_ICS_PASSWORD`) | Plain HTTP(S) ICS feed. |
+| `CAL_ICS_FILE` | Absolute path to a local `.ics` file. |
+| `CAL_HORIZON_HOURS` | Look-ahead window (default `48`). Events further out wait for the next refresh. |
+| `CAL_REFRESH_MINUTES` | Re-fetch interval (default `5`). |
+| `CAL_STATE_FILE` | Where to persist scheduler state (default `./calendar-state.json`). |
+| `CAL_ACTION_BASE_URL` | Public URL the server hosts `/calendar/action` on. Defaults to `http://127.0.0.1:<port>/calendar/action`. Remote daemons need this to point at the server's real hostname. |
+| `CAL_SUMMARY_AT` | `HH:MM` to enable the daily agenda summary (see below). |
+
+### Reminders
+
+Each matched VALARM fires a notification at its trigger time, titled with
+the event summary and carrying two action buttons:
+
+- **Snooze Nh** — reschedules the reminder `N` hours out (default 4,
+  configurable per-daemon). Survives a calendar refresh that would
+  otherwise drop the event.
+- **Dismiss** — marks the occurrence delivered for the current cycle.
+
+Actions POST to `/calendar/action/{snooze,dismiss}` on the same host
+that delivered the notification. On the daemon these are localhost +
+no-auth; on the server they require the shared secret.
+
+### Daily Summary
+
+Opt-in feature that fires one notification per day at a configured local
+time listing tomorrow's events (with location when present). Empty days
+still fire a "Nothing scheduled." card so you know the feature is alive.
+
+- **Daemon:** Settings → Calendar → check *Daily summary* and pick a
+  time. Stored as `calendar.dailySummary: { hour, minute }` in
+  `config.json`.
+- **Server:** set `CAL_SUMMARY_AT=HH:MM`. Leaving it unset disables.
+
+Local-time based, so DST transitions are handled automatically — the
+next fire is always rebased from `Local::now()`.
+
+### Introspection
+
+`GET /calendar/action/upcoming` returns the scheduler's pending fires as
+JSON, sorted by effective fire time (soonest first). Same auth rule as
+the action routes — localhost daemon is open; public server requires the
+shared secret.
+
+```bash
+# Daemon
+curl -s http://127.0.0.1:9876/calendar/action/upcoming | jq
+
+# Server
+curl -s -H "Authorization: Bearer $SECRET" \
+  https://notifier.example.com/calendar/action/upcoming | jq
+```
+
+Each row:
+
+```json
+{
+  "id": "a9f3b0…",
+  "summary": "Dentist",
+  "location": "Main St",
+  "fireAt": "2026-04-24T08:45:00Z",
+  "eventStart": "2026-04-24T09:00:00Z",
+  "eventEnd": "2026-04-24T09:30:00Z",
+  "snoozedUntil": "2026-04-24T13:00:00Z",
+  "firedAt": "2026-04-24T09:00:00Z"
+}
+```
+
+`snoozedUntil` + `firedAt` both set means "delivered once and re-armed
+by a snooze." `firedAt` alone means "handled, in GC retention." No
+`firedAt` means "still waiting to fire."
+
+### Scope and limitations
+
+- Only `DISPLAY` / `AUDIO` VALARMs with a relative `TRIGGER` duration
+  are honored. `EMAIL` alarms and absolute-datetime triggers are
+  skipped.
+- Floating (`TZID=`-less, non-UTC) times are treated as UTC with a
+  debug log. Good enough for Fastmail-hosted personal calendars;
+  non-UTC TZID handling is tracked for later.
+- `RECURRENCE-ID` overrides aren't yet applied — the master RRULE's
+  instance still emits at the original time.
 
 ## Testing
 
