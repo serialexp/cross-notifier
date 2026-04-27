@@ -11,17 +11,23 @@ COPY Cargo.toml Cargo.lock ./
 COPY core/Cargo.toml core/Cargo.toml
 COPY server/Cargo.toml server/Cargo.toml
 COPY daemon/Cargo.toml daemon/Cargo.toml
+COPY calendar/Cargo.toml calendar/Cargo.toml
 
 # Create empty src trees so cargo can resolve targets without the real code.
-RUN mkdir -p core/src server/src daemon/src \
+RUN mkdir -p core/src server/src daemon/src calendar/src \
     && echo "fn main() {}" > server/src/main.rs \
     && echo "" > core/src/lib.rs \
     && echo "fn main() {}" > daemon/src/main.rs \
+    && echo "" > calendar/src/lib.rs \
+    && mkdir -p calendar/examples \
+    && echo "fn main() {}" > calendar/examples/fetch_caldav.rs \
+    && echo "fn main() {}" > calendar/examples/dump_caldav.rs \
     && cargo fetch --locked
 
 # Real sources.
 COPY core ./core
 COPY server ./server
+COPY calendar ./calendar
 
 # Build only the server crate — skip the daemon (needs graphics libs).
 RUN cargo build --release -p cross-notifier-server --locked
