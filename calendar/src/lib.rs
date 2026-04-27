@@ -24,6 +24,9 @@ pub use notifier::{CoreNotifier, CoreNotifierConfig, Notifier};
 pub use router::{calendar_action_router, CalendarHandleSlot};
 pub use scheduler::{SchedulerCmd, SchedulerHandle};
 pub use service::{CalendarService, CalendarServiceConfig, DailySummaryConfig, dry_run};
-pub use source::{CalDav, CalendarSource, IcsFile, IcsUrl};
+pub use source::{
+    CalDav, CalendarSource, IcsFile, IcsUrl, fingerprint, strip_auth,
+    KIND_CALDAV, KIND_ICS_FILE, KIND_ICS_URL,
+};
 pub use store::{JsonStore, MemoryStore, PendingMap, PendingStore};
 pub use types::{EventInstance, Occurrence, PendingFire};

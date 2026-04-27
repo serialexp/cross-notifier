@@ -357,6 +357,19 @@ async fn ws_client_loop(socket: WebSocket, state: CoreState, client_name: String
 
     let (mut sink, mut stream) = socket.split();
 
+    // Advertise server capabilities once. Sent unconditionally even when
+    // empty so a daemon that previously saw a calendar feed can clear its
+    // cache when reconnecting to a stripped-down server.
+    match Message::encode(MessageType::ServerInfo, state.server_info()) {
+        Ok(encoded) => {
+            if sink.send(WsMessage::Text(encoded.into())).await.is_err() {
+                info!(client = %client_name, "client dropped before server-info");
+                return;
+            }
+        }
+        Err(e) => warn!("encode server-info: {e}"),
+    }
+
     loop {
         tokio::select! {
             out = outbound_rx.recv() => {

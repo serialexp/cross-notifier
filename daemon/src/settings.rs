@@ -14,6 +14,9 @@ use crate::autostart;
 use crate::config::{CenterPanelConfig, Config, NotificationRule, RuleAction, RulesConfig, Server};
 use crate::gpu::{GpuContext, WindowSurface};
 use crate::server::{ConnectionMap, ConnectionState};
+use cross_notifier_calendar::{
+    fingerprint as calendar_fingerprint, strip_auth, KIND_CALDAV, KIND_ICS_FILE, KIND_ICS_URL,
+};
 use crate::sound;
 
 // ── Dropdown option lists ──────────────────────────────────────────────
@@ -64,6 +67,20 @@ struct SettingsState {
     /// Calendar settings surfaced in the UI. `None` means the feature is
     /// off; populated means the user has chosen a source kind.
     calendar: Option<CalendarEntry>,
+    /// Calendars advertised by currently-connected servers, flattened
+    /// across all servers. Refreshed alongside connection status; empty
+    /// when no server is pushing reminders. Display-only.
+    server_feeds: Vec<ServerCalendarFeed>,
+}
+
+/// One advertised calendar feed, attributed to the server it came from
+/// so the UI can show "Server X is pushing calendar Y".
+#[derive(Clone)]
+struct ServerCalendarFeed {
+    server_label: String,
+    kind: String,
+    label: String,
+    fingerprint: String,
 }
 
 /// UI-facing shape for CalendarConfig. Flattens the CalendarSource enum
@@ -135,6 +152,35 @@ impl CalendarEntry {
             }
         }
         e
+    }
+
+    /// Compute the same fingerprint the server uses, so the UI can flag
+    /// "you and the server are pointed at the same calendar". Returns
+    /// `None` when the entry is incomplete (e.g. empty URL/path) — no
+    /// point comparing to a placeholder.
+    fn fingerprint(&self) -> Option<String> {
+        match self.kind.as_str() {
+            "icsFile" => {
+                if self.path.is_empty() {
+                    return None;
+                }
+                Some(calendar_fingerprint(KIND_ICS_FILE, &self.path))
+            }
+            "icsUrl" => {
+                if self.endpoint.is_empty() {
+                    return None;
+                }
+                Some(calendar_fingerprint(KIND_ICS_URL, &strip_auth(&self.endpoint)))
+            }
+            // CalDAV (and any unrecognised kind that the to_config()
+            // fallback would treat as CalDAV).
+            _ => {
+                if self.endpoint.is_empty() {
+                    return None;
+                }
+                Some(calendar_fingerprint(KIND_CALDAV, &strip_auth(&self.endpoint)))
+            }
+        }
     }
 
     fn to_config(&self) -> crate::config::CalendarConfig {
@@ -242,6 +288,8 @@ impl SettingsState {
             })
             .collect();
 
+        let server_feeds = collect_server_feeds(&config.servers, connection_status);
+
         Self {
             name: config.name.clone(),
             servers,
@@ -250,6 +298,7 @@ impl SettingsState {
             autostart_enabled: autostart::is_autostart_installed(),
             debug_font_metrics: config.debug_font_metrics,
             calendar: config.calendar.as_ref().map(CalendarEntry::from_config),
+            server_feeds,
         }
     }
 
@@ -433,6 +482,26 @@ impl SettingsWindow {
                     None => {
                         entry.connected = false;
                         entry.last_error = None;
+                    }
+                }
+            }
+            // Rebuild server_feeds from the same snapshot so the
+            // calendar section reflects the latest advertisement.
+            self.state.server_feeds.clear();
+            for entry in &self.state.servers {
+                if let Some(st) = map.get(&entry.url) {
+                    let server_label = if entry.label.is_empty() {
+                        entry.url.clone()
+                    } else {
+                        entry.label.clone()
+                    };
+                    for c in &st.server_calendars {
+                        self.state.server_feeds.push(ServerCalendarFeed {
+                            server_label: server_label.clone(),
+                            kind: c.kind.clone(),
+                            label: c.label.clone(),
+                            fingerprint: c.fingerprint.clone(),
+                        });
                     }
                 }
             }
@@ -925,8 +994,91 @@ fn draw_rules(ui: &mut egui::Ui, state: &mut SettingsState) {
     }
 }
 
+/// Flatten the per-server calendar advertisements into a single list,
+/// attributing each entry to the server that sent it. Order matches the
+/// order servers appear in the config.
+fn collect_server_feeds(
+    servers: &[crate::config::Server],
+    connection_status: &HashMap<String, ConnectionState>,
+) -> Vec<ServerCalendarFeed> {
+    let mut out = Vec::new();
+    for s in servers {
+        let Some(st) = connection_status.get(&s.url) else { continue };
+        let server_label = if s.label.is_empty() { s.url.clone() } else { s.label.clone() };
+        for c in &st.server_calendars {
+            out.push(ServerCalendarFeed {
+                server_label: server_label.clone(),
+                kind: c.kind.clone(),
+                label: c.label.clone(),
+                fingerprint: c.fingerprint.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// Map the wire `kind` discriminator to a UI-friendly short name.
+fn kind_pretty(kind: &str) -> &'static str {
+    match kind {
+        KIND_CALDAV => "CalDAV",
+        KIND_ICS_URL => "ICS URL",
+        KIND_ICS_FILE => "ICS File",
+        _ => "calendar",
+    }
+}
+
 fn draw_calendar(ui: &mut egui::Ui, state: &mut SettingsState) {
     ui.label("Calendar:");
+
+    // Show what each connected server is pushing on its end. Display
+    // only — there's nothing for the user to *change* about the remote
+    // configuration here, but knowing it's happening prevents the
+    // "calendar integration is unchecked but I'm still getting events"
+    // confusion.
+    if !state.server_feeds.is_empty() {
+        let local_fp = state.calendar.as_ref().and_then(|c| c.fingerprint());
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Server-side calendar feeds");
+                ui.weak(format!("({})", state.server_feeds.len()));
+            });
+            for feed in &state.server_feeds {
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "• {} — {} ({})",
+                        feed.server_label,
+                        feed.label,
+                        kind_pretty(&feed.kind),
+                    ));
+                    ui.weak(format!("id: {}", feed.fingerprint));
+                });
+                if let Some(ref local) = local_fp {
+                    if local == &feed.fingerprint {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 180, 60),
+                            "  ⚠ Same calendar as your local config — \
+                             you'll see every reminder twice. Consider \
+                             disabling local calendar reminders below.",
+                        );
+                    } else {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 180, 60),
+                            "  ⚠ Different from your local calendar — \
+                             you'll receive reminders from BOTH calendars. \
+                             Disable one to avoid noise.",
+                        );
+                    }
+                }
+            }
+            if local_fp.is_none() && state.calendar.is_some() {
+                ui.weak(
+                    "Local calendar source is incomplete; can't compare \
+                     fingerprints yet.",
+                );
+            }
+        });
+        ui.add_space(4.0);
+    }
 
     let mut enabled = state.calendar.is_some();
     if ui

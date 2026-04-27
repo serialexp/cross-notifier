@@ -17,6 +17,11 @@ pub enum MessageType {
     Action,
     Resolved,
     Expired,
+    /// Sent once by the server, immediately after WS handshake. Lets the
+    /// daemon learn which calendars (if any) the server is pushing
+    /// reminders from, so the UI can show the user "you're getting
+    /// notifications from X even though local calendar is off".
+    ServerInfo,
 }
 
 /// Action sent from client to server when user clicks a notification action button.
@@ -46,6 +51,25 @@ pub struct ResolvedMessage {
 #[serde(rename_all = "camelCase")]
 pub struct ExpiredMessage {
     pub notification_id: String,
+}
+
+/// Server capability advertisement. Mirrors `ServerInfoMessage` in
+/// `cross_notifier_core::protocol`; duplicated here only because the
+/// daemon's protocol module predates the shared core types and other
+/// messages haven't been migrated yet.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerInfoMessage {
+    #[serde(default)]
+    pub calendars: Vec<ServerCalendarInfo>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerCalendarInfo {
+    pub kind: String,
+    pub label: String,
+    pub fingerprint: String,
 }
 
 impl Message {

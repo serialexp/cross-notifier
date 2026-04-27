@@ -11,6 +11,11 @@ pub enum MessageType {
     Action,
     Resolved,
     Expired,
+    /// Server → client, sent once immediately after WS handshake. Lets a
+    /// new client see what the server is configured to do (e.g. which
+    /// calendars it's pushing reminders for) without having to re-derive
+    /// it from incoming traffic.
+    ServerInfo,
 }
 
 /// Envelope for all WebSocket traffic between server and clients.
@@ -144,6 +149,37 @@ pub struct ResolvedMessage {
 pub struct ExpiredMessage {
     #[serde(rename = "id")]
     pub notification_id: String,
+}
+
+/// Server → client: capabilities advertisement. Sent once per WS
+/// connection, immediately after handshake. Empty fields mean "feature
+/// not configured here" — clients should treat absence as "the server
+/// will not push that kind of traffic".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerInfoMessage {
+    /// Calendars the server is pushing reminders from. Multiple entries
+    /// are allowed for forward-compat; today the server has a single
+    /// source so this is `len() <= 1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calendars: Vec<ServerCalendarInfo>,
+}
+
+/// One advertised calendar feed. The server intentionally does NOT
+/// include the URL or any credentials — clients only get a stable
+/// fingerprint they can compare against their own local config plus a
+/// human-readable label and kind.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerCalendarInfo {
+    /// Source kind: "caldav" | "ics_url" | "ics_file". Stable wire form.
+    pub kind: String,
+    /// Human-readable label suitable for display ("Work CalDAV", etc).
+    pub label: String,
+    /// Hex fingerprint of the canonical (credential-free) source id.
+    /// Both ends compute it the same way so equality means "same
+    /// calendar".
+    pub fingerprint: String,
 }
 
 /// `POST /notify` response body when the short `wait` elapsed but the

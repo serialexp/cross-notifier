@@ -11,7 +11,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::app::AppEvent;
 use crate::notification::NotificationPayload;
-use crate::protocol::{ExpiredMessage, Message, MessageType, ResolvedMessage};
+use crate::protocol::{ExpiredMessage, Message, MessageType, ResolvedMessage, ServerInfoMessage};
 
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -112,6 +112,7 @@ async fn connect_and_run(
     server_label: &str,
     event_proxy: &EventLoopProxy<AppEvent>,
 ) -> anyhow::Result<()> {
+    let server_url = url.to_string();
     // Parse the URL so we can derive the Host header. tungstenite fills in
     // handshake headers automatically when given a bare URL, but because we
     // attach custom headers (Authorization, X-Client-Name) we pass a full
@@ -159,7 +160,7 @@ async fn connect_and_run(
             msg = read.next() => {
                 match msg {
                     Some(Ok(tungstenite::Message::Text(text))) => {
-                        handle_message(&text, server_label, event_proxy);
+                        handle_message(&text, &server_url, server_label, event_proxy);
                     }
                     Some(Ok(tungstenite::Message::Ping(data))) => {
                         let _ = write.send(tungstenite::Message::Pong(data)).await;
@@ -184,6 +185,7 @@ async fn connect_and_run(
 
 fn handle_message(
     text: &str,
+    server_url: &str,
     server_label: &str,
     event_proxy: &EventLoopProxy<AppEvent>,
 ) {
@@ -231,6 +233,19 @@ fn handle_message(
         }
         MessageType::Action => {
             warn!("Unexpected action message from server {}", server_label);
+        }
+        MessageType::ServerInfo => {
+            match serde_json::from_value::<ServerInfoMessage>(msg.data) {
+                Ok(info) => {
+                    let _ = event_proxy.send_event(AppEvent::ServerInfoReceived {
+                        server_url: server_url.to_string(),
+                        info,
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to parse server-info from {}: {}", server_label, e);
+                }
+            }
         }
     }
 }

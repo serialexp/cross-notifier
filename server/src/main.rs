@@ -13,6 +13,7 @@ use cross_notifier_calendar::{
 use cross_notifier_core::{
     CoreState,
     device::DeviceRegistry,
+    protocol::{ServerCalendarInfo, ServerInfoMessage},
     push::{ApnsClient, ApnsConfig, ApnsEnvironment, ApnsKey},
     router,
 };
@@ -286,7 +287,27 @@ async fn run(args: Args) -> Result<()> {
     // Optionally attach the calendar service. Driven purely by env vars
     // for the server (vs. the daemon, which plumbs this through its
     // persistent config). The calendar is off unless a source is set.
-    let calendar = maybe_spawn_calendar(&args, &secret, state.clone()).await?;
+    //
+    // We build the source up front so we can populate the
+    // ServerInfoMessage *before* the first state clone — `with_server_info`
+    // uses `Arc::get_mut`, which only succeeds while we're the sole owner.
+    let calendar_source = build_calendar_source();
+    let mut server_info = ServerInfoMessage::default();
+    if let Some(src) = calendar_source.as_ref() {
+        server_info.calendars.push(ServerCalendarInfo {
+            kind: src.kind().to_string(),
+            label: src.label().to_string(),
+            fingerprint: src.fingerprint(),
+        });
+    }
+    state = state.with_server_info(server_info);
+
+    let calendar = if let Some(src) = calendar_source {
+        Some(spawn_calendar(src, &args, &secret, state.clone()).await?)
+    } else {
+        tracing::info!("calendar: disabled (no source configured)");
+        None
+    };
 
     let mut app = router(state);
     if let Some(calendar) = calendar.as_ref() {
@@ -322,22 +343,13 @@ async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Build and spawn a `CalendarService` if the environment configures one.
-///
-/// Three source selectors are honored, in priority order:
+/// Build a calendar source from env. Returns `None` when nothing is
+/// configured. Three selectors are honored, in priority order:
 ///   1. `CAL_ICS_FILE`  — local .ics file (handy for testing)
 ///   2. `CAL_ICS_URL`   — public ICS subscription URL (with optional basic auth)
 ///   3. `CALDAV_*` set  — full CalDAV with per-calendar credentials
-///
-/// Persistence: `CAL_STATE_FILE` (defaults to `./calendar-state.json`).
-/// Horizon: `CAL_HORIZON_HOURS` (default 48).
-/// Refresh: `CAL_REFRESH_MINUTES` (default 5).
-async fn maybe_spawn_calendar(
-    args: &Args,
-    secret: &str,
-    state: CoreState,
-) -> Result<Option<CalendarService>> {
-    let source: Option<Arc<dyn CalendarSource>> = if let Ok(path) = env::var("CAL_ICS_FILE") {
+fn build_calendar_source() -> Option<Arc<dyn CalendarSource>> {
+    if let Ok(path) = env::var("CAL_ICS_FILE") {
         Some(Arc::new(IcsFile::new(path)))
     } else if let Ok(url) = env::var("CAL_ICS_URL") {
         let mut s = IcsUrl::new(url);
@@ -353,13 +365,20 @@ async fn maybe_spawn_calendar(
         Some(Arc::new(CalDav::new(endpoint, user, password)))
     } else {
         None
-    };
+    }
+}
 
-    let Some(source) = source else {
-        tracing::info!("calendar: disabled (no source configured)");
-        return Ok(None);
-    };
-
+/// Spawn a `CalendarService` over an already-constructed source.
+///
+/// Persistence: `CAL_STATE_FILE` (defaults to `./calendar-state.json`).
+/// Horizon: `CAL_HORIZON_HOURS` (default 48).
+/// Refresh: `CAL_REFRESH_MINUTES` (default 5).
+async fn spawn_calendar(
+    source: Arc<dyn CalendarSource>,
+    args: &Args,
+    secret: &str,
+    state: CoreState,
+) -> Result<CalendarService> {
     let horizon_hours: i64 = env::var("CAL_HORIZON_HOURS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -424,5 +443,5 @@ async fn maybe_spawn_calendar(
         "calendar: enabled",
     );
 
-    Ok(Some(svc))
+    Ok(svc)
 }

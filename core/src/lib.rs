@@ -16,7 +16,7 @@ pub mod subscriber;
 
 pub use protocol::{
     Action, ActionMessage, ExpiredMessage, Message, MessageType, Notification, PendingResponse,
-    ResolvedMessage,
+    ResolvedMessage, ServerCalendarInfo, ServerInfoMessage,
 };
 pub use router::router;
 pub use state::CoreState;

@@ -27,7 +27,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::app::AppEvent;
 use crate::notification::NotificationPayload;
-use crate::protocol::{ExpiredMessage, ResolvedMessage};
+use crate::protocol::{ExpiredMessage, ResolvedMessage, ServerCalendarInfo};
 use crate::store::SharedStore;
 
 /// Live connection state for a single server, exposed to the UI.
@@ -37,6 +37,11 @@ pub struct ConnectionState {
     /// Most recent connection error. Cleared on successful connect.
     /// Retained while disconnected so the UI can show *why*.
     pub last_error: Option<String>,
+    /// Calendars the server advertised on connect. Empty when the server
+    /// has no calendar feed configured, or when we haven't received the
+    /// `ServerInfo` message yet (e.g. talking to an older server).
+    #[serde(default)]
+    pub server_calendars: Vec<ServerCalendarInfo>,
 }
 
 pub type ConnectionMap = Arc<RwLock<HashMap<String, ConnectionState>>>;

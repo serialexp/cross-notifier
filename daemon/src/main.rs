@@ -961,11 +961,15 @@ impl App {
         let url_owned = srv.url.clone();
         self._runtime.block_on(async {
             let mut map = connections.write().await;
+            // Manual reconnect — drop stale server-advertised calendars
+            // so the UI doesn't claim the server is still pushing them
+            // until the new ServerInfo arrives.
             map.insert(
                 url_owned,
                 ConnectionState {
                     connected: false,
                     last_error: None,
+                    server_calendars: Vec::new(),
                 },
             );
         });
@@ -1270,17 +1274,36 @@ impl ApplicationHandler<AppEvent> for App {
                 let error_for_map = error.clone();
                 self._runtime.block_on(async {
                     let mut map = connections.write().await;
-                    map.insert(
-                        url_for_map,
-                        ConnectionState {
-                            connected,
-                            last_error: if connected { None } else { error_for_map },
-                        },
-                    );
+                    // Update in place so server-advertised calendars (set
+                    // by ServerInfoReceived) survive transient status
+                    // flips, but clear them on a hard disconnect — they
+                    // could be stale by the time we reconnect.
+                    let entry = map.entry(url_for_map).or_default();
+                    entry.connected = connected;
+                    entry.last_error = if connected { None } else { error_for_map };
+                    if !connected {
+                        entry.server_calendars.clear();
+                    }
                 });
                 let status = if connected { "connected" } else { "disconnected" };
                 info!("{} {}", server_url, status);
                 // Nudge the settings window to repaint so its indicator reflects the new status.
+                if let Some(settings) = &self.settings {
+                    settings.window.request_redraw();
+                }
+            }
+            AppEvent::ServerInfoReceived { server_url, info } => {
+                info!(
+                    "Server {} advertised {} calendar(s)",
+                    server_url,
+                    info.calendars.len()
+                );
+                let connections = self.connections.clone();
+                self._runtime.block_on(async {
+                    let mut map = connections.write().await;
+                    let entry = map.entry(server_url).or_default();
+                    entry.server_calendars = info.calendars;
+                });
                 if let Some(settings) = &self.settings {
                     settings.window.request_redraw();
                 }

@@ -8,6 +8,13 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
+
+/// Discriminator strings for [`CalendarSource::kind`]. Stable across the
+/// wire — both ends of the WebSocket use these to compare fingerprints.
+pub const KIND_ICS_FILE: &str = "ics_file";
+pub const KIND_ICS_URL: &str = "ics_url";
+pub const KIND_CALDAV: &str = "caldav";
 
 /// A source that produces VCALENDAR text on demand. Implementations may
 /// concatenate multiple VCALENDAR blocks (CalDAV returns one per event);
@@ -19,6 +26,48 @@ pub trait CalendarSource: Send + Sync {
 
     /// Short human label for logs.
     fn label(&self) -> &str;
+
+    /// Stable kind discriminator: one of [`KIND_ICS_FILE`],
+    /// [`KIND_ICS_URL`], [`KIND_CALDAV`]. Used in fingerprint computation
+    /// so the same URL under different kinds doesn't collide.
+    fn kind(&self) -> &'static str;
+
+    /// Canonical, credential-free identifier for the source (URL or path).
+    /// Two configurations pointing at the same calendar must return the
+    /// same canonical id.
+    fn canonical_id(&self) -> String;
+
+    /// Short hex fingerprint covering `kind` + `canonical_id`. Used to
+    /// detect "the daemon and the server are pointed at the same
+    /// calendar" without exposing the URL.
+    fn fingerprint(&self) -> String {
+        fingerprint(self.kind(), &self.canonical_id())
+    }
+}
+
+/// Compute the fingerprint used by [`CalendarSource::fingerprint`]. Free
+/// function so daemon-side config types can produce the same value
+/// without going through the trait.
+pub fn fingerprint(kind: &str, canonical_id: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(kind.as_bytes());
+    h.update(b":");
+    h.update(canonical_id.as_bytes());
+    // 16 hex chars (64 bits) — collision-resistant enough for "is this
+    // the same calendar?" comparisons, short enough to display.
+    hex::encode(&h.finalize()[..8])
+}
+
+/// Strip embedded basic-auth credentials from a URL, returning a
+/// canonical form suitable for fingerprinting. Idempotent: a URL without
+/// credentials is returned unchanged.
+pub fn strip_auth(url: &str) -> String {
+    if let Some((scheme_end, rest)) = url.split_once("://") {
+        if let Some((_, tail)) = rest.split_once('@') {
+            return format!("{scheme_end}://{tail}");
+        }
+    }
+    url.to_string()
 }
 
 // ── IcsFile ────────────────────────────────────────────────────────────
@@ -44,6 +93,12 @@ impl CalendarSource for IcsFile {
     }
     fn label(&self) -> &str {
         &self.label
+    }
+    fn kind(&self) -> &'static str {
+        KIND_ICS_FILE
+    }
+    fn canonical_id(&self) -> String {
+        self.path.to_string_lossy().into_owned()
     }
 }
 
@@ -89,6 +144,12 @@ impl CalendarSource for IcsUrl {
     }
     fn label(&self) -> &str {
         &self.label
+    }
+    fn kind(&self) -> &'static str {
+        KIND_ICS_URL
+    }
+    fn canonical_id(&self) -> String {
+        strip_auth(&self.url)
     }
 }
 
@@ -174,6 +235,12 @@ impl CalendarSource for CalDav {
     }
     fn label(&self) -> &str {
         &self.label
+    }
+    fn kind(&self) -> &'static str {
+        KIND_CALDAV
+    }
+    fn canonical_id(&self) -> String {
+        strip_auth(&self.endpoint)
     }
 }
 
@@ -271,6 +338,45 @@ END:VCALENDAR</c:calendar-data>
         let out = extract_calendar_data(xml).unwrap();
         assert!(out.contains("BEGIN:VCALENDAR"));
         assert!(out.contains("X:2"));
+    }
+
+    #[test]
+    fn fingerprint_matches_across_credential_variants() {
+        // Same calendar via different auth variants → same fingerprint.
+        // This is the contract the daemon and server rely on to flag
+        // "you and the server are pointed at the same calendar".
+        let with_auth = CalDav::new(
+            "https://user:pw@caldav.example.com/cal/uuid/",
+            "user",
+            "pw",
+        );
+        let without_auth = CalDav::new(
+            "https://caldav.example.com/cal/uuid/",
+            "user",
+            "pw",
+        );
+        assert_eq!(with_auth.fingerprint(), without_auth.fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_differs_by_kind() {
+        // Same canonical id but different kinds → different fingerprints,
+        // so an icsUrl and a caldav at the same hostname won't collide.
+        let a = fingerprint(KIND_CALDAV, "https://example.com/cal/");
+        let b = fingerprint(KIND_ICS_URL, "https://example.com/cal/");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn strip_auth_canonicalises() {
+        assert_eq!(
+            strip_auth("https://user:pw@example.com/cal/"),
+            "https://example.com/cal/"
+        );
+        assert_eq!(
+            strip_auth("https://example.com/cal/"),
+            "https://example.com/cal/"
+        );
     }
 
     #[test]

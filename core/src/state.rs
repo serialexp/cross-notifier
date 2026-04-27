@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 use crate::action::{ActionError, execute_http_action};
 use crate::device::{DeviceRegistry, Platform};
 use crate::protocol::{
-    Action, ActionMessage, ExpiredMessage, Notification, ResolvedMessage,
+    Action, ActionMessage, ExpiredMessage, Notification, ResolvedMessage, ServerInfoMessage,
 };
 use crate::push::{ApnsClient, PushError, PushOutcome};
 use crate::subscriber::{OutboundMessage, Subscriber};
@@ -61,6 +61,11 @@ struct CoreInner {
     /// Optional APNS client. Requires `devices` to also be set for push
     /// dispatch to do anything useful.
     apns: Option<ApnsClient>,
+    /// Capability advertisement sent to every new WS client right after
+    /// handshake. Default-constructed (empty) when the server has nothing
+    /// to advertise, in which case the message is still emitted —
+    /// clients use that to clear any stale state from a previous run.
+    server_info: ServerInfoMessage,
 }
 
 impl CoreState {
@@ -73,6 +78,7 @@ impl CoreState {
                 http: reqwest::Client::new(),
                 devices: None,
                 apns: None,
+                server_info: ServerInfoMessage::default(),
             }),
         }
     }
@@ -92,6 +98,20 @@ impl CoreState {
             .expect("CoreState::with_apns called after cloning")
             .apns = Some(apns);
         self
+    }
+
+    /// Set the [`ServerInfoMessage`] sent to every new WS client.
+    pub fn with_server_info(mut self, info: ServerInfoMessage) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("CoreState::with_server_info called after cloning")
+            .server_info = info;
+        self
+    }
+
+    /// The capability advertisement that the WS handler dispatches on
+    /// connect.
+    pub fn server_info(&self) -> &ServerInfoMessage {
+        &self.inner.server_info
     }
 
     pub fn devices(&self) -> Option<&DeviceRegistry> {

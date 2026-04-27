@@ -2,7 +2,7 @@
 // Bridges the async tokio world (WebSocket, HTTP) with the synchronous winit event loop.
 
 use crate::notification::NotificationPayload;
-use crate::protocol::{ExpiredMessage, ResolvedMessage};
+use crate::protocol::{ExpiredMessage, ResolvedMessage, ServerInfoMessage};
 
 /// Events sent from async tasks to the winit event loop.
 pub enum AppEvent {
@@ -21,6 +21,14 @@ pub enum AppEvent {
         server_url: String,
         connected: bool,
         error: Option<String>,
+    },
+
+    /// Server advertised its capabilities right after WS handshake.
+    /// Stored against the connection so the settings UI can show what
+    /// the server is doing on its end (e.g. pushing calendar reminders).
+    ServerInfoReceived {
+        server_url: String,
+        info: ServerInfoMessage,
     },
 
     /// Exclusive notification was resolved by another client.
@@ -69,6 +77,14 @@ impl std::fmt::Debug for AppEvent {
                     server_url,
                     connected,
                     error.as_deref().map(|e| format!(", err={}", e)).unwrap_or_default()
+                )
+            }
+            Self::ServerInfoReceived { server_url, info } => {
+                write!(
+                    f,
+                    "ServerInfoReceived({}, calendars={})",
+                    server_url,
+                    info.calendars.len()
                 )
             }
             Self::NotificationResolved(r) => {
