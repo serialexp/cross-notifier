@@ -43,9 +43,17 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /build/target/release/cross-notifier-server /app/cross-notifier-server
 
+# Persistent state directory for the calendar scheduler (pending reminder
+# map). Owned by the runtime user so JsonStore's atomic write (tmp +
+# rename) works without root. Declared as a VOLUME so operators can mount
+# their own storage without needing to know the path.
+RUN mkdir -p /data && chown notifier:notifier /data
+VOLUME ["/data"]
+
 USER notifier
 
 EXPOSE 9876
-ENV CROSS_NOTIFIER_PORT=9876
+ENV CROSS_NOTIFIER_PORT=9876 \
+    CAL_STATE_FILE=/data/calendar-state.json
 
 ENTRYPOINT ["/app/cross-notifier-server"]
