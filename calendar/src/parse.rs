@@ -481,9 +481,19 @@ fn expand_recurrence(
         .collect())
 }
 
-/// Append `Z` to the UNTIL value in an RRULE if it's a floating
-/// DATE-TIME. Leaves DATE-only UNTILs (8 digits) and already-UTC
-/// DATE-TIMEs (trailing Z) alone.
+/// Normalize the UNTIL value in an RRULE so it matches a UTC DTSTART.
+///
+/// We always serialize DTSTART as a UTC DATE-TIME (`...Z`) in
+/// [`expand_recurrence`], so UNTIL must also be a UTC DATE-TIME — the
+/// rrule crate rejects a mismatch outright (DATE-only UNTIL is parsed
+/// as a *local* DATE-TIME at midnight, so even that fails).
+///
+/// Transformations:
+/// * `UNTIL=YYYYMMDDTHHMMSSZ` → unchanged
+/// * `UNTIL=YYYYMMDDTHHMMSS`  → append `Z` (treat floating as UTC)
+/// * `UNTIL=YYYYMMDD`         → expand to `YYYYMMDDT235959Z` (end of day),
+///                              so the last day's instances are still
+///                              included.
 fn normalize_until_to_utc(rrule: &str) -> String {
     let mut out = String::with_capacity(rrule.len());
     for (i, part) in rrule.split(';').enumerate() {
@@ -494,15 +504,20 @@ fn normalize_until_to_utc(rrule: &str) -> String {
             .strip_prefix("UNTIL=")
             .or_else(|| part.strip_prefix("until="))
         {
-            // DATE value (YYYYMMDD, 8 chars) — leave as-is.
-            // DATE-TIME value (15 chars: YYYYMMDDTHHMMSS) without trailing Z
-            // needs a Z appended.
             let has_t = rest.contains('T');
             let has_z = rest.ends_with('Z');
             if has_t && !has_z {
                 out.push_str("UNTIL=");
                 out.push_str(rest);
                 out.push('Z');
+                continue;
+            }
+            // DATE-only UNTIL (8 digits, no T). Expand to end-of-day UTC
+            // so we still include any instances on that final date.
+            if !has_t && rest.len() == 8 && rest.chars().all(|c| c.is_ascii_digit()) {
+                out.push_str("UNTIL=");
+                out.push_str(rest);
+                out.push_str("T235959Z");
                 continue;
             }
         }
@@ -612,12 +627,32 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
     }
 
     #[test]
-    fn normalize_until_leaves_date_only_alone() {
-        // DATE value (all-day recurrence end) — no Z allowed.
+    fn normalize_until_expands_date_only_to_end_of_day_utc() {
+        // DATE-only UNTIL (8 digits) — the rrule crate parses an unzulu'd
+        // value as Local, which mismatches our UTC DTSTART. Expand to
+        // end-of-day UTC so the final day's instances are still included.
         assert_eq!(
             normalize_until_to_utc("FREQ=DAILY;UNTIL=20260601"),
-            "FREQ=DAILY;UNTIL=20260601"
+            "FREQ=DAILY;UNTIL=20260601T235959Z"
         );
+        assert_eq!(
+            normalize_until_to_utc("FREQ=DAILY;UNTIL=20260601;BYDAY=MO"),
+            "FREQ=DAILY;UNTIL=20260601T235959Z;BYDAY=MO"
+        );
+    }
+
+    #[test]
+    fn recurring_with_date_only_until_expands() {
+        // Reproduces the production warning: DTSTART in UTC, UNTIL as DATE.
+        let ics = "\
+BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\
+BEGIN:VEVENT\r\nUID:dateuntil@x\r\nDTSTART:20260501T100000Z\r\nDTEND:20260501T103000Z\r\n\
+RRULE:FREQ=WEEKLY;UNTIL=20260601\r\nSUMMARY:S\r\n\
+BEGIN:VALARM\r\nTRIGGER:-PT5M\r\nACTION:DISPLAY\r\nEND:VALARM\r\n\
+END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let occs = parse(ics, now(), Duration::days(60)).unwrap();
+        // 5 weekly occurrences: May 1, 8, 15, 22, 29 (all <= 2026-06-01).
+        assert_eq!(occs.len(), 5);
     }
 
     #[test]
