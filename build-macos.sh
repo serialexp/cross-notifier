@@ -38,7 +38,7 @@ elif [ -f "icon.png" ]; then
 fi
 
 echo "Building Rust daemon..."
-MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --manifest-path daemon/Cargo.toml
+MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release -p cross-notifier-daemon
 
 echo "Creating app bundle structure..."
 rm -rf "${APP_DIR}"
@@ -46,7 +46,7 @@ mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
 
 echo "Copying binary..."
-cp daemon/target/release/cross-notifier "${MACOS_DIR}/"
+cp target/release/cross-notifier "${MACOS_DIR}/"
 
 echo "Copying icon..."
 if [ -f "Icon.icns" ]; then

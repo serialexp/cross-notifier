@@ -8,26 +8,26 @@ WORKDIR /build
 # Workspace manifests first for better layer caching. Copy every crate's
 # Cargo.toml so `cargo fetch` sees the full dependency graph.
 COPY Cargo.toml Cargo.lock ./
-COPY core/Cargo.toml core/Cargo.toml
-COPY server/Cargo.toml server/Cargo.toml
-COPY daemon/Cargo.toml daemon/Cargo.toml
-COPY calendar/Cargo.toml calendar/Cargo.toml
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/calendar/Cargo.toml crates/calendar/Cargo.toml
+COPY bin/server/Cargo.toml bin/server/Cargo.toml
+COPY bin/daemon/Cargo.toml bin/daemon/Cargo.toml
 
 # Create empty src trees so cargo can resolve targets without the real code.
-RUN mkdir -p core/src server/src daemon/src calendar/src \
-    && echo "fn main() {}" > server/src/main.rs \
-    && echo "" > core/src/lib.rs \
-    && echo "fn main() {}" > daemon/src/main.rs \
-    && echo "" > calendar/src/lib.rs \
-    && mkdir -p calendar/examples \
-    && echo "fn main() {}" > calendar/examples/fetch_caldav.rs \
-    && echo "fn main() {}" > calendar/examples/dump_caldav.rs \
+RUN mkdir -p crates/core/src crates/calendar/src bin/server/src bin/daemon/src \
+    && echo "fn main() {}" > bin/server/src/main.rs \
+    && echo "" > crates/core/src/lib.rs \
+    && echo "fn main() {}" > bin/daemon/src/main.rs \
+    && echo "" > crates/calendar/src/lib.rs \
+    && mkdir -p crates/calendar/examples \
+    && echo "fn main() {}" > crates/calendar/examples/fetch_caldav.rs \
+    && echo "fn main() {}" > crates/calendar/examples/dump_caldav.rs \
     && cargo fetch --locked
 
 # Real sources.
-COPY core ./core
-COPY server ./server
-COPY calendar ./calendar
+COPY crates/core ./crates/core
+COPY crates/calendar ./crates/calendar
+COPY bin/server ./bin/server
 
 # Build only the server crate — skip the daemon (needs graphics libs).
 RUN cargo build --release -p cross-notifier-server --locked

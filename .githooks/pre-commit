@@ -1,28 +1,22 @@
 #!/bin/sh
-# ABOUTME: Pre-commit hook that runs linting checks before each commit.
-# ABOUTME: Runs gofmt, go vet, and golangci-lint to match CI.
+# ABOUTME: Pre-commit hook that runs Rust formatting and lint checks.
+# ABOUTME: Mirrors what CI runs (cargo fmt --check, cargo clippy -D warnings).
 
 set -e
 
 echo "Running pre-commit checks..."
 
-# Check if just is available
 if command -v just >/dev/null 2>&1; then
+    # `just lint` runs clippy across the workspace with -D warnings.
     just lint
+    # Format check (no dedicated `just` recipe yet; use cargo directly).
+    cargo fmt --all -- --check
 else
-    # Fall back to running commands directly
     echo "Checking formatting..."
-    if [ -n "$(gofmt -s -l . | grep -v '^vendor/')" ]; then
-        echo "Go code is not formatted:"
-        gofmt -s -d .
-        exit 1
-    fi
+    cargo fmt --all -- --check
 
-    echo "Running go vet..."
-    go vet ./...
-
-    echo "Running golangci-lint..."
-    golangci-lint run --timeout=5m
+    echo "Running clippy..."
+    cargo clippy --workspace --all-targets -- -D warnings
 fi
 
 echo "Pre-commit checks passed!"

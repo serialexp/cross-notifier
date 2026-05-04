@@ -4,23 +4,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build and Test Commands
 
+The repo is a Rust workspace (`Cargo.toml` at root). Common commands:
+
 ```bash
-# Build
-go build -o cross-notifier .
+# Build the desktop daemon (GUI)
+just build           # cargo build --release -p cross-notifier-daemon
 
-# Run tests
-go test ./...
+# Run the desktop daemon locally
+just dev             # cargo run -p cross-notifier-daemon
 
-# Run a single test
-go test -run TestName ./...
+# Run all workspace tests
+just test            # cargo test --workspace
+
+# Lint (clippy with -D warnings, matching CI)
+just lint
+
+# Format
+just fmt
+
+# Build server-only binary (headless, no GUI deps)
+just server          # cargo build --release -p cross-notifier-server
 
 # Build macOS app bundle and DMG
-./build-macos.sh --dmg
+just macos           # ./build-macos.sh --dmg
 
-# Build server-only binary (no GUI dependencies)
-just server
-
-# Build Docker image via Depot
+# Build and push Docker image via Depot
 just docker
 
 # Build Docker image locally
@@ -31,54 +39,100 @@ just docker-local
 
 ```bash
 # Daemon mode (displays notifications)
-./cross-notifier
+cargo run -p cross-notifier-daemon
 
 # Daemon connected to remote server
-./cross-notifier -connect ws://host:9876/ws -secret <key>
+cargo run -p cross-notifier-daemon -- -connect ws://host:9876/ws -secret <key>
 
-# Open settings window
-./cross-notifier -setup
-
-# Run standalone server (Docker/headless)
-./cmd/server/server -secret <key>
+# Run standalone server (Docker / headless)
+cargo run -p cross-notifier-server -- -secret <key>
 ```
 
-## Architecture
+## Workspace Layout
 
-**Binaries:**
-- **Daemon** (`cross-notifier`): Displays notifications locally via GLFW+OpenGL GUI. Accepts HTTP POST on `:9876/notify`. Optionally connects to a remote server to receive notifications.
-- **Server** (`cmd/server`): Headless. Accepts HTTP POST notifications and broadcasts to connected WebSocket clients. Handles exclusive notification coordination.
+Libraries live in `crates/`, binaries in `bin/`.
 
-**Key files:**
-- `main.go` - Entry point, CLI flags, daemon GUI loop
-- `client.go` - WebSocket client with reconnection logic
-- `icon.go` - Icon loading from file paths, URLs, and base64 data
-- `config.go` - Persistent configuration (server URL, secret)
-- `settings.go` - First-run settings window
-- `cmd/server/main.go` - Standalone server for Docker/headless deployment
+```
+crates/
+  core/      — shared types and utilities (no GUI deps)
+  calendar/  — CalDAV-based calendar reminder source
+bin/
+  server/    — headless WebSocket+HTTP server (used in Docker)
+  daemon/    — desktop GUI daemon (winit + wgpu + tray-icon + egui settings)
+ios/                   — iOS app (Swift, separate from the Rust workspace)
+packages/notify-client — TypeScript client SDK
+```
 
-**Notification flow:**
-1. Service sends POST to server's `/notify` endpoint with auth header
-2. Server fetches/resizes any `iconHref` URLs, converts to base64 `iconData`
-3. Server broadcasts notification JSON to all connected WebSocket clients
-4. Daemon receives via WebSocket, calls `addNotification()`, renders via OpenGL
+## Daemon Internals
 
-**Icon sources** (priority order):
-- `iconData` - base64 encoded image (used for remote notifications)
-- `iconHref` - URL (server fetches and converts to base64)
-- `iconPath` - local file path (daemon only)
+**Stack:**
+- `winit` — windowing and event loop
+- `wgpu` — GPU rendering (custom batched 2D renderer with WGSL shaders)
+- `fontdue` — glyph atlas / text rendering
+- `tray-icon` + `muda` — system tray (requires GTK on Linux)
+- `egui` — settings window UI
+- `axum` — local HTTP server (`:9876/notify`, `/center` endpoints)
+- `tokio-tungstenite` — WebSocket client (per-server reconnecting, Bearer auth)
 
-**Authentication:** Shared secret via `Authorization: Bearer <secret>` header for both HTTP and WebSocket connections.
+**Async ↔ main thread:** background tokio tasks deliver `AppEvent`s into the
+winit event loop via `EventLoopProxy::send_event()` so the loop wakes even
+when the window is hidden.
 
-**Config location:** `~/Library/Application Support/cross-notifier/config.json` (macOS)
+**Key files (under `bin/daemon/src/`):**
+- `main.rs` — winit `ApplicationHandler`, App struct, render frame
+- `app.rs` — `AppEvent` enum
+- `client.rs` — WebSocket client with reconnection
+- `server.rs` — local axum HTTP server
+- `tray.rs` — system tray icon + menu
+- `card.rs` — notification card layout/rendering
+- `center.rs` — notification center panel
+- `store.rs` — persisted notification store
+- `config.rs` — config types + JSON load/save
+- `settings.rs` — egui settings window
+- `icon.rs` — base64/file/URL icon loading + GPU upload
+- `font.rs` — glyph atlas (embeds `bin/daemon/fonts/Hack-Regular.ttf`)
+- `sound.rs` — embedded sound playback (rodio)
+- `protocol.rs` — WebSocket message envelope types
+- `rules.rs` — notification rule matching
+- `autostart.rs` — login-item / autostart integration
+- `gpu.rs` — wgpu device/surface init (PostMultiplied alpha on macOS)
+- `renderer.rs` — batched 2D renderer (solid + textured + text)
 
-## OpenGL Renderer Notes
+## Notification Flow
 
-**Transparency does not compound:** When drawing overlapping elements with alpha values, the topmost draw call's alpha is what you see - they don't multiply together. If a card has `A: 0.863` and you draw a button on top with `A: 0.5`, the button area shows at 0.5 transparency, not 0.5 × 0.863. To make elements visually match their background's transparency, use the same alpha value.
+1. Service POSTs to server's `/notify` with `Authorization: Bearer <secret>`.
+2. Server resolves any `iconHref` URL (fetches + base64-encodes), then broadcasts
+   the notification JSON to all connected WebSocket clients.
+3. Daemon receives via WebSocket, enqueues an `AppEvent::Notification`, renders
+   via wgpu.
+
+**Icon source priority:** `iconData` (base64) → `iconHref` (URL, server-side
+fetched) → `iconPath` (local path, daemon only).
+
+**Auth:** shared secret via `Authorization: Bearer <secret>` for both HTTP and
+WebSocket connections.
+
+**Config location:** platform-specific config dir under `cross-notifier/` —
+`~/Library/Application Support/cross-notifier/config.json` on macOS,
+`~/.config/cross-notifier/config.json` on Linux.
+
+## Tray Icon Assets
+
+Stored at the repo root and pulled into the daemon via `include_bytes!`:
+
+- `tray@2x.png` / `tray-notification@2x.png` — black "for light themes" variant
+  (also serves as the macOS template icon, which the OS auto-inverts)
+- `tray-dark@2x.png` / `tray-notification-dark@2x.png` — white "for dark themes"
+  variant (Linux/Windows panels don't auto-recolor)
+- `tray*.svg` — source SVGs; ImageMagick (`convert -background none -density 576
+  -resize 44x44 ...`) renders them to the @2x PNGs.
+
+The Rust daemon currently embeds only the light variant; the dark assets are
+ready for a theme-aware picker (see TODO.md).
 
 ## Git Commits
 
-Follow the [Conventional Commits](https://www.conventionalcommits.org/) specification for commit messages:
+Follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
 
 ```
 <type>(<scope>): <description>
@@ -86,4 +140,4 @@ Follow the [Conventional Commits](https://www.conventionalcommits.org/) specific
 [optional body]
 ```
 
-Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`
+Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`.

@@ -70,8 +70,8 @@ Download `cross-notifier-vX.X.X-windows-amd64.zip` from the [latest release](htt
 ### From Source
 
 ```bash
-go build -o cross-notifier .
-./cross-notifier
+cargo build --release -p cross-notifier-daemon
+./target/release/cross-notifier
 ```
 
 ### Server-Only Binary

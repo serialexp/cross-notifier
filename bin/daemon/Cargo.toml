@@ -1,0 +1,82 @@
+[package]
+name = "cross-notifier-daemon"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "cross-notifier"
+path = "src/main.rs"
+
+[dependencies]
+cross-notifier-core = { path = "../../crates/core" }
+cross-notifier-calendar = { path = "../../crates/calendar" }
+
+# Windowing & rendering
+winit = "0.30"
+wgpu = "24"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+
+# Async runtime & networking
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+futures-util = "0.3"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Image handling
+image = "0.25"
+base64 = "0.22"
+
+# Audio
+rodio = "0.20"
+
+# System tray
+tray-icon = "0.19"
+muda = "0.16"
+
+# File dialogs (Phase 3, but declare now)
+rfd = "0.15"
+
+# egui for settings UI
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = { version = "0.31", default-features = false, features = ["clipboard", "links"] }
+
+# Font rendering
+fontdue = "0.9"
+
+# Config & platform
+dirs = "6"
+notify = "7"
+
+# Error handling & logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Misc
+open = "5"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+
+# GTK for system tray on Linux (tray-icon requires a GTK event loop).
+# NOTE: this target-specific table MUST stay below all regular [dependencies]
+# entries — a TOML table header terminates the previous table, so any deps
+# declared after it would silently become linux-only.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+glib = "0.18"
+
+[dev-dependencies]
+tempfile = "3"
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
