@@ -11,7 +11,9 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::app::AppEvent;
 use crate::autostart;
-use crate::config::{CenterPanelConfig, Config, NotificationRule, RuleAction, RulesConfig, Server};
+use crate::config::{
+    CenterPanelConfig, Config, NotificationRule, RuleAction, RulesConfig, Server, TrayIconStyle,
+};
 use crate::gpu::{GpuContext, WindowSurface};
 use crate::server::{ConnectionMap, ConnectionState};
 use crate::sound;
@@ -64,6 +66,7 @@ struct SettingsState {
     rules: Vec<RuleEntry>,
     autostart_enabled: bool,
     debug_font_metrics: bool,
+    tray_icon_style: TrayIconStyle,
     /// Calendar settings surfaced in the UI. `None` means the feature is
     /// off; populated means the user has chosen a source kind.
     calendar: Option<CalendarEntry>,
@@ -308,6 +311,7 @@ impl SettingsState {
             rules,
             autostart_enabled: autostart::is_autostart_installed(),
             debug_font_metrics: config.debug_font_metrics,
+            tray_icon_style: config.tray_icon_style,
             calendar: config.calendar.as_ref().map(CalendarEntry::from_config),
             server_feeds,
         }
@@ -385,6 +389,7 @@ impl SettingsState {
             center_panel: CenterPanelConfig::default(),
             calendar: self.calendar.as_ref().map(CalendarEntry::to_config),
             debug_font_metrics: self.debug_font_metrics,
+            tray_icon_style: self.tray_icon_style,
         }
     }
 }
@@ -688,6 +693,12 @@ fn draw_settings_ui(
             ui.add_space(8.0);
 
             draw_calendar(ui, state);
+
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            draw_appearance(ui, state);
 
             ui.add_space(16.0);
             ui.separator();
@@ -1025,6 +1036,52 @@ fn kind_pretty(kind: &str) -> &'static str {
     }
 }
 
+fn draw_appearance(ui: &mut egui::Ui, state: &mut SettingsState) {
+    ui.label("Appearance:");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Tray icon:");
+
+        let label = match state.tray_icon_style {
+            TrayIconStyle::Auto => "Auto",
+            TrayIconStyle::Light => "For light panel",
+            TrayIconStyle::Dark => "For dark panel",
+        };
+
+        egui::ComboBox::from_id_salt("tray_icon_style")
+            .selected_text(label)
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut state.tray_icon_style, TrayIconStyle::Auto, "Auto")
+                    .on_hover_text(
+                        "Detect the desktop color-scheme automatically. Works on \
+                         most modern desktops via the XDG portal.",
+                    );
+                ui.selectable_value(
+                    &mut state.tray_icon_style,
+                    TrayIconStyle::Light,
+                    "For light panel",
+                )
+                .on_hover_text("Force the dark icon (drawn on a light panel).");
+                ui.selectable_value(
+                    &mut state.tray_icon_style,
+                    TrayIconStyle::Dark,
+                    "For dark panel",
+                )
+                .on_hover_text("Force the light icon (drawn on a dark panel).");
+            });
+
+        if cfg!(target_os = "macos") {
+            ui.weak("(macOS handles tray inversion automatically)");
+        }
+    });
+    ui.add_space(2.0);
+    ui.weak(
+        "Plasma users: if the auto-detected variant doesn't match your panel, \
+         pick the right one explicitly here.",
+    );
+}
+
 fn draw_calendar(ui: &mut egui::Ui, state: &mut SettingsState) {
     ui.label("Calendar:");
 
@@ -1286,6 +1343,7 @@ mod tests {
             center_panel: CenterPanelConfig::default(),
             calendar: None,
             debug_font_metrics: true,
+            tray_icon_style: TrayIconStyle::Dark,
         }
     }
 
@@ -1311,6 +1369,7 @@ mod tests {
         assert_eq!(result.rules.rules[0].action, RuleAction::Normal);
         assert_eq!(result.rules.rules[1].action, RuleAction::Dismiss);
         assert!(result.debug_font_metrics);
+        assert_eq!(result.tray_icon_style, TrayIconStyle::Dark);
     }
 
     #[test]

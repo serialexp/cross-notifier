@@ -28,6 +28,40 @@ pub struct Config {
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub debug_font_metrics: bool,
+
+    /// Manual override for which tray icon variant to display. `Auto`
+    /// (the default) defers to desktop color-scheme detection; `Light`
+    /// and `Dark` force the matching variant for desktops where the
+    /// global color-scheme doesn't actually match the panel — Plasma's
+    /// "light scheme, dark panel" is the canonical case.
+    #[serde(default, skip_serializing_if = "TrayIconStyle::is_default")]
+    pub tray_icon_style: TrayIconStyle,
+}
+
+/// User preference for which tray icon variant to render.
+///
+/// "Light"/"Dark" describe the *panel* the icon will appear on, not the
+/// icon's colour: `Light` selects the black icon (visible on a light
+/// panel), `Dark` selects the white icon (visible on a dark panel). This
+/// matches what the user has to reason about — "my panel is dark, give
+/// me the variant designed for dark panels" — without making them think
+/// about the inverse colour relationship.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TrayIconStyle {
+    /// Detect the desktop's color-scheme and pick automatically.
+    #[default]
+    Auto,
+    /// Always use the variant for light panels (black icon).
+    Light,
+    /// Always use the variant for dark panels (white icon).
+    Dark,
+}
+
+impl TrayIconStyle {
+    pub fn is_default(&self) -> bool {
+        matches!(self, TrayIconStyle::Auto)
+    }
 }
 
 /// Calendar integration settings persisted into the daemon's config.json.

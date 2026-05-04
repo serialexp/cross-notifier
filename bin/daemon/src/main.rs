@@ -19,6 +19,7 @@ mod server;
 mod settings;
 mod sound;
 mod store;
+mod theme;
 mod tray;
 
 use std::collections::HashMap;
@@ -895,8 +896,13 @@ impl App {
         let servers_changed =
             self.config.servers != new_config.servers || self.config.name != new_config.name;
         let calendar_changed = self.config.calendar != new_config.calendar;
+        let tray_style_changed = self.config.tray_icon_style != new_config.tray_icon_style;
 
         self.config = new_config;
+
+        if tray_style_changed && let Some(tray) = &self.tray {
+            tray.set_theme_override(self.config.tray_icon_style);
+        }
 
         if calendar_changed {
             self.reload_calendar();
@@ -1225,7 +1231,7 @@ impl App {
 impl ApplicationHandler<AppEvent> for App {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
         if cause == StartCause::Init && self.tray.is_none() {
-            self.tray = Some(TrayState::new());
+            self.tray = Some(TrayState::new(self.config.tray_icon_style));
         }
     }
 

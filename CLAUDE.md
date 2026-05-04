@@ -97,6 +97,8 @@ when the window is hidden.
 - `autostart.rs` — login-item / autostart integration
 - `gpu.rs` — wgpu device/surface init (PostMultiplied alpha on macOS)
 - `renderer.rs` — batched 2D renderer (solid + textured + text)
+- `theme.rs` — desktop color-scheme detection (XDG portal → KDE → GNOME)
+  used by the tray to pick between the light/dark icon variants
 
 ## Notification Flow
 
@@ -127,8 +129,17 @@ Stored at the repo root and pulled into the daemon via `include_bytes!`:
 - `tray*.svg` — source SVGs; ImageMagick (`convert -background none -density 576
   -resize 44x44 ...`) renders them to the @2x PNGs.
 
-The Rust daemon currently embeds only the light variant; the dark assets are
-ready for a theme-aware picker (see TODO.md).
+The daemon embeds both variant pairs and picks at runtime. The picker
+resolves a `tray_icon_style` config field (`auto` / `light` / `dark`,
+default `auto`) — `auto` defers to `theme::detect()`, which walks the
+XDG portal → KDE → GNOME chain. macOS short-circuits to the black
+icon plus `with_icon_as_template(true)`; the OS handles inversion.
+
+The override exists because some Linux desktops (notably KDE Plasma) run
+a light global color-scheme with a dark panel — auto-detection alone
+can't tell, so the user picks manually. The Linux GTK idle handler
+re-evaluates the variant every ~1.5s while in `Auto` mode, so a desktop
+theme switch propagates without a daemon restart.
 
 ## Git Commits
 
