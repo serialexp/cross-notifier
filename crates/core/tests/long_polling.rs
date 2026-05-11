@@ -338,6 +338,201 @@ async fn missing_auth_is_unauthorized() {
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
 
+// --- /notify/alertmanager end-to-end -----------------------------------
+//
+// Drives the full wire path: real HTTP POST of an Alertmanager v4 webhook,
+// the router translates to a Notification, broadcast goes out over the
+// real WebSocket, the subscriber decodes it. Unit tests in
+// `crates/core/src/alertmanager.rs` cover translation in isolation; these
+// tests prove the route is wired, auth is enforced, and the broadcast
+// path actually fires.
+
+/// Read the next Notification off a WS stream. Skips non-Notification
+/// messages (e.g. the ServerInfo handshake message that lands first).
+async fn read_notification<S>(stream: &mut S) -> Notification
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await
+            .expect("ws read timeout")
+            .expect("stream ended")
+            .expect("ws error");
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            _ => continue,
+        };
+        let env: Message = Message::decode(&text).unwrap();
+        if env.msg_type != MessageType::Notification {
+            continue;
+        }
+        return serde_json::from_value(env.data).unwrap();
+    }
+}
+
+/// A representative Alertmanager v4 firing payload. Used by multiple
+/// tests below so the shape is defined once.
+fn firing_payload() -> serde_json::Value {
+    json!({
+        "version": "4",
+        "groupKey": "{}/{alertname=\"DiskFull\"}:{instance=\"db-1\"}",
+        "truncatedAlerts": 0,
+        "status": "firing",
+        "receiver": "cross-notifier",
+        "groupLabels": {"alertname": "DiskFull"},
+        "commonLabels": {"alertname": "DiskFull", "severity": "page"},
+        "commonAnnotations": {
+            "summary": "Disk usage on db-1 above 90%",
+            "description": "data dir at 91% — restore disk before WAL backs up"
+        },
+        "externalURL": "https://alertmanager.example.com",
+        "alerts": [{
+            "status": "firing",
+            "labels": {"alertname": "DiskFull", "instance": "db-1", "severity": "page"},
+            "annotations": {},
+            "startsAt": "2025-05-11T12:00:00Z",
+            "endsAt": "0001-01-01T00:00:00Z",
+            "generatorURL": "https://prom.example.com/graph?...",
+            "fingerprint": "abc123"
+        }]
+    })
+}
+
+#[tokio::test]
+async fn alertmanager_webhook_broadcasts_translated_notification() {
+    let h = spawn().await;
+    let (_sink, mut stream) = connect_ws(&h.base, "ops-laptop").await;
+    // Give the WS handshake a beat so the subscriber is registered before
+    // we fire the POST — otherwise we race against `state.add_subscriber`.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+    let resp = bearer(client.post(format!("{}/notify/alertmanager", h.base)))
+        .json(&firing_payload())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    let n = read_notification(&mut stream).await;
+    assert_eq!(n.source, "alertmanager");
+    assert_eq!(n.title, "Disk usage on db-1 above 90%");
+    assert!(
+        n.message.contains("data dir at 91%"),
+        "message did not include description: {}",
+        n.message
+    );
+    assert_eq!(n.status, "error");
+    // ID is hashed from groupKey — exact value doesn't matter, but it
+    // must be present and follow the `am-` prefix convention.
+    assert!(n.id.starts_with("am-"), "id missing prefix: {}", n.id);
+    // Both action buttons should be present, in canonical order.
+    let labels: Vec<&str> = n.actions.iter().map(|a| a.label.as_str()).collect();
+    assert_eq!(labels, vec!["Open in Prometheus", "Open Alertmanager"]);
+}
+
+#[tokio::test]
+async fn alertmanager_webhook_dedup_id_is_stable_across_refires() {
+    // Alertmanager re-sends `firing` payloads every `repeat_interval`
+    // (default 4h). The notification id we synthesise from groupKey must
+    // be identical across re-fires so clients can update the existing
+    // card rather than stacking duplicates.
+    let h = spawn().await;
+    let (_sink, mut stream) = connect_ws(&h.base, "ops-laptop").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+    for _ in 0..2 {
+        let resp = bearer(client.post(format!("{}/notify/alertmanager", h.base)))
+            .json(&firing_payload())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    }
+
+    let first = read_notification(&mut stream).await;
+    let second = read_notification(&mut stream).await;
+    assert_eq!(
+        first.id, second.id,
+        "re-fire of the same alert group produced a different id; \
+         client-side dedup would silently break"
+    );
+}
+
+#[tokio::test]
+async fn alertmanager_resolved_status_maps_to_success() {
+    let h = spawn().await;
+    let (_sink, mut stream) = connect_ws(&h.base, "ops-laptop").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut payload = firing_payload();
+    payload["status"] = json!("resolved");
+    payload["alerts"][0]["status"] = json!("resolved");
+
+    let client = reqwest::Client::new();
+    let resp = bearer(client.post(format!("{}/notify/alertmanager", h.base)))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    let n = read_notification(&mut stream).await;
+    assert_eq!(n.status, "success");
+    assert!(
+        n.message.starts_with("Resolved."),
+        "resolved alert message should lead with 'Resolved.': {}",
+        n.message
+    );
+}
+
+#[tokio::test]
+async fn alertmanager_webhook_requires_auth() {
+    let h = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/notify/alertmanager", h.base))
+        .json(&firing_payload())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn alertmanager_webhook_rejects_malformed_json() {
+    let h = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = bearer(client.post(format!("{}/notify/alertmanager", h.base)))
+        .header("content-type", "application/json")
+        .body("{not actually json}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn alertmanager_webhook_rejects_empty_payload() {
+    // A syntactically valid but semantically empty payload — no summary,
+    // no alertname, no alerts. There's nothing to display, so the
+    // endpoint should reject rather than broadcast a blank notification.
+    let h = spawn().await;
+    let client = reqwest::Client::new();
+    let resp = bearer(client.post(format!("{}/notify/alertmanager", h.base)))
+        .json(&json!({
+            "version": "4",
+            "status": "firing"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
 // Prevent unused-import warnings for the `Action` re-export when the list grows.
 #[allow(dead_code)]
 fn _uses() -> Action {

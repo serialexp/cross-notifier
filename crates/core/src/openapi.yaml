@@ -75,6 +75,73 @@ paths:
               schema: { $ref: "#/components/schemas/ExpiredMessage" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /notify/alertmanager:
+    post:
+      tags: [notify]
+      summary: Accept a Prometheus Alertmanager v4 webhook
+      description: |
+        Accepts the JSON payload that Prometheus Alertmanager posts to
+        webhook receivers and translates it into a cross-notifier
+        notification, broadcasting on the same path as `POST /notify`.
+
+        Translation summary (full mapping documented in
+        `crates/core/src/alertmanager.rs`):
+          - `status: "resolved"` → cross-notifier `status: "success"`
+          - `status: "firing"` + `commonLabels.severity: "page"` or
+            `"critical"` → `status: "error"`
+          - `status: "firing"` + `commonLabels.severity: "warning"` →
+            `status: "warning"`
+          - other firing → `status: "info"`
+
+        The `groupKey` field is hashed into a short stable notification
+        id (`am-<11chars>`) so clients can deduplicate Alertmanager's
+        periodic re-fires of the same group rather than stacking them.
+
+        Wire format reference:
+          https://prometheus.io/docs/alerting/latest/configuration/#webhook_config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: |
+                Alertmanager v4 webhook payload. The schema is owned by
+                Prometheus; only the fields cross-notifier reads are
+                documented here.
+              properties:
+                version: { type: string, example: "4" }
+                groupKey: { type: string }
+                status: { type: string, enum: [firing, resolved] }
+                receiver: { type: string }
+                groupLabels: { type: object, additionalProperties: { type: string } }
+                commonLabels: { type: object, additionalProperties: { type: string } }
+                commonAnnotations: { type: object, additionalProperties: { type: string } }
+                externalURL: { type: string, format: uri }
+                alerts:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      status: { type: string, enum: [firing, resolved] }
+                      labels: { type: object, additionalProperties: { type: string } }
+                      annotations: { type: object, additionalProperties: { type: string } }
+                      startsAt: { type: string, format: date-time }
+                      endsAt: { type: string, format: date-time }
+                      generatorURL: { type: string, format: uri }
+                      fingerprint: { type: string }
+      responses:
+        "202":
+          description: |
+            Translated and accepted. Broadcasts to WebSocket subscribers
+            and (when push is configured) fans out to mobile devices.
+        "400":
+          description: |
+            Payload was not valid Alertmanager v4 JSON, or was so empty
+            (no summary, no alertname, no alerts) that no displayable
+            notification could be derived.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /notify/{id}/wait:
     get:
       tags: [notify]

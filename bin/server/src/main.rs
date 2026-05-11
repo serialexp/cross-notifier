@@ -332,8 +332,9 @@ async fn run(args: Args) -> Result<()> {
 
     let addr: SocketAddr = ([0, 0, 0, 0], args.port).into();
     tracing::info!("Notification server listening on {addr}");
-    tracing::info!("  POST   /notify          - send notifications (requires auth)");
-    tracing::info!("  GET    /notify/:id/wait - long-poll response (requires auth)");
+    tracing::info!("  POST   /notify              - send notifications (requires auth)");
+    tracing::info!("  POST   /notify/alertmanager - Prometheus Alertmanager v4 webhook (requires auth)");
+    tracing::info!("  GET    /notify/:id/wait     - long-poll response (requires auth)");
     tracing::info!("  GET    /ws              - WebSocket for clients (requires auth)");
     tracing::info!("  POST   /devices         - register push device (requires auth)");
     tracing::info!("  GET    /devices         - list push devices (requires auth)");

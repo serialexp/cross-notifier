@@ -20,6 +20,7 @@ use serde::Deserialize;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
+use crate::alertmanager::AlertmanagerWebhook;
 use crate::device::{Device, Platform};
 use crate::openapi;
 use crate::protocol::{
@@ -33,6 +34,7 @@ use crate::subscriber::{OutboundMessage, Subscriber};
 pub fn router(state: CoreState) -> Router {
     Router::new()
         .route("/notify", post(handle_notify))
+        .route("/notify/alertmanager", post(handle_alertmanager_notify))
         .route("/notify/{id}/wait", get(handle_wait))
         .route("/ws", get(handle_ws))
         .route(
@@ -143,27 +145,85 @@ async fn handle_notify(
         None
     };
 
-    state
-        .broadcast(OutboundMessage::Notification(n.clone()))
-        .await;
-
-    // Fan out to mobile push targets on a background task so the HTTP
-    // caller doesn't wait on APNS. A slow APNS call would otherwise
-    // balloon our /notify latency and potentially tip over upstream
-    // proxies.
-    if state.apns().is_some() && state.devices().is_some() {
-        let state_for_push = state.clone();
-        let notif_for_push = n.clone();
-        tokio::spawn(async move {
-            state_for_push.dispatch_push(&notif_for_push).await;
-        });
-    }
+    broadcast_and_push(&state, n.clone()).await;
 
     let Some(rx) = pending_rx else {
         return StatusCode::ACCEPTED.into_response();
     };
 
     wait_and_respond(&n.id, rx, Duration::from_secs(wait_secs)).await
+}
+
+/// Fan a notification out to all subscribers (WS broadcast) and, if push
+/// is configured, dispatch to mobile devices on a detached task.
+///
+/// Pulled out of `handle_notify` so other endpoints (e.g. the Alertmanager
+/// webhook) can produce a `Notification` server-side and inject it through
+/// the same path without re-implementing the fan-out semantics.
+///
+/// Push dispatch is intentionally fire-and-forget on a background task —
+/// APNS round-trips are slow and unbounded, so blocking the HTTP caller
+/// on them would balloon `/notify` latency and tip over upstream proxies.
+async fn broadcast_and_push(state: &CoreState, n: Notification) {
+    state
+        .broadcast(OutboundMessage::Notification(n.clone()))
+        .await;
+
+    if state.apns().is_some() && state.devices().is_some() {
+        let state_for_push = state.clone();
+        tokio::spawn(async move {
+            state_for_push.dispatch_push(&n).await;
+        });
+    }
+}
+
+/// Accepts a Prometheus Alertmanager v4 webhook payload, translates it to
+/// a cross-notifier `Notification`, and pushes it through the same
+/// broadcast + APNS fan-out as `/notify`.
+///
+/// Source-specific endpoints (this one, future `/notify/github`, etc.)
+/// keep the parser code close to the format it handles and let auth /
+/// rate-limit scope per source. The shared notification model is the
+/// internal contract; the endpoints are the format adapters.
+async fn handle_alertmanager_notify(
+    State(state): State<CoreState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !check_auth(&headers, state.secret()) {
+        return unauthorized();
+    }
+
+    let webhook: AlertmanagerWebhook = match serde_json::from_slice(&body) {
+        Ok(w) => w,
+        Err(e) => {
+            warn!("alertmanager webhook decode failed: {e}");
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid alertmanager v4 payload: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(n) = webhook.to_notification() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "alertmanager payload has nothing displayable \
+             (no summary, alertname, or alerts)",
+        )
+            .into_response();
+    };
+
+    debug!(
+        id = %n.id,
+        title = %n.title,
+        status = %n.status,
+        "translated alertmanager webhook to notification"
+    );
+
+    broadcast_and_push(&state, n).await;
+    StatusCode::ACCEPTED.into_response()
 }
 
 // --- /devices handlers ---

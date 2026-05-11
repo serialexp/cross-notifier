@@ -5,6 +5,7 @@
 //! endpoints under their own path, alongside any extra routes they need.
 
 pub mod action;
+pub mod alertmanager;
 pub mod device;
 pub mod icon;
 pub mod openapi;
